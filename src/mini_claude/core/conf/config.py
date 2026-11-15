@@ -1,4 +1,3 @@
-
 import os
 from dataclasses import dataclass,field
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 _DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 7437
+_DEFAULT_PORT = 10721
 _DEFAULT_LOG_LEVEL = "INFO"
 _DEFAULT_LOG_FILE = "~/.kama/logs/core.log"
 _DEFAULT_LOG_FORMAT = "text"
