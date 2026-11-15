@@ -4,7 +4,7 @@ import sys
 import time
 
 import mini_claude
-from mini_claude.core.config import MiniClaudeConfig
+from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.bus.commands import PongResult
 from mini_claude.core.bus.envelope import JsonRpcError, JsonRpcSuccess
 

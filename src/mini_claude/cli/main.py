@@ -5,28 +5,36 @@ import sys
 
 from mini_claude.cli.commands.version import cmd_version
 from mini_claude.cli.commands.ping import cmd_ping
+from mini_claude.cli.commands.run import cmd_run
 
-from mini_claude.core.config import get_config
-from mini_claude.core.logging_setup import setup_logging
+from mini_claude.core.conf.config import get_config
+from mini_claude.core.log.logging_setup import setup_logging
 
 # CLI 主入口：解析命令行参数并分发到对应子命令
 def main() -> None:
     parser = argparse.ArgumentParser(prog="mc", description="MiniClaude CLI")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
+
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("ping", help="Ping the core daemon")
 
-    args = parser.parse_args()
+    run_parser = subparsers.add_parser("run", help="Run an agent task")
+    run_parser.add_argument("--goal", required=True, help="Goal for the agent to accomplish")
 
+    args = parser.parse_args()
     if args.version:
         print("MiniClaude CLI ",cmd_version())
         return
 
-    if args.command == "ping":
-        config = get_config()
-        setup_logging(config)
-        cmd_ping(config)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    config = get_config()
+    setup_logging(config)
+
+    match args.command:
+        case "ping":
+            cmd_ping(config)
+        case "run":
+            cmd_run(args.goal, config)
+        case _:
+            parser.print_help()
+            sys.exit(1)
         

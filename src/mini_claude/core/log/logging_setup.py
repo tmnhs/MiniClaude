@@ -5,7 +5,7 @@ import logging.handlers
 import sys
 from pathlib import Path
 
-from mini_claude.core.config import MiniClaudeConfig
+from mini_claude.core.conf.config import MiniClaudeConfig
 
 _TEXT_FMT = 'level=%(levelname)s ts=%(asctime)s source=%(name)s msg="%(message)s"'
 _JSON_FMT = '{"level":"%(levelname)s","ts":"%(asctime)s","source":"%(name)s","msg":"%(message)s"}'

@@ -9,8 +9,8 @@ from typing import Any
 
 import mini_claude
 from mini_claude.core.bus.commands import PongResult
-from mini_claude.core.config import get_config
-from mini_claude.core.logging_setup import setup_logging
+from mini_claude.core.conf.config import get_config
+from mini_claude.core.log.logging_setup import setup_logging
 from mini_claude.core.transport.socket_server import SocketServer
 
 logger = logging.getLogger(__name__)
