@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime
 from typing import cast
 
 from mini_claude.core.bus.events import ToolCallFailedEvent, ToolCallFinishedEvent, ToolCallStartedEvent
@@ -10,11 +9,9 @@ from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import ToolCallBlock
 from mini_claude.core.tools.base import ToolResult
 from mini_claude.core.tools.registry import ToolRegistry
+from mini_claude.core.utils.time import now_iso
 
 _DEFAULT_TIMEOUT: float = 10.0
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 # 发布 ToolCallFailedEvent 并返回对应 ToolResult
 async def _fail(
@@ -33,7 +30,7 @@ async def _fail(
             error_type=error_type,
             error_message=error_message,
             elapsed_ms=elapsed_ms,
-            ts=_now(),
+            ts=now_iso(),
         )
     )
     return ToolResult(content=error_message, is_error=True, error_type=error_type)
@@ -55,7 +52,7 @@ async def invoke_tool(
             tool_use_id=tool_call.id,
             tool_name=tool_call.name,
             params=dict(tool_call.input),
-            ts=_now(),
+            ts=now_iso(),
         )
     )
 
@@ -93,7 +90,7 @@ async def invoke_tool(
                 tool_use_id=tool_call.id,
                 tool_name=tool_call.name,
                 elapsed_ms=ms,
-                ts=_now(),
+                ts=now_iso(),
             )
         )
         return result

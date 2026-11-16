@@ -13,5 +13,7 @@ class LLMProvider(Protocol):
         tool_schemas: list[dict[str, object]],
         bus: EventBus,
         run_id: str,
+        *,
+        step: int = 0,
     ) -> LlmResponse: 
         pass

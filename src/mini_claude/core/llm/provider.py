@@ -1,23 +1,19 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
 from typing import Any
 
 import anthropic
 from mini_claude.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
+from mini_claude.core.utils.time import now_iso
 
 _SYSTEM_PROMPT = (
     "You are a helpful AI assistant. "
     "Use the available tools to complete the user's goal. "
     "When the goal is fully achieved, respond with a final answer and do not call any more tools."
 )
-
-# 返回当前 UTC 时间的 ISO 8601 字符串
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
 
 class AnthropicProvider:
     # 初始化 Anthropic 客户端；client 可在测试时注入以跳过 API key 检查
@@ -38,9 +34,11 @@ class AnthropicProvider:
         tool_schemas: list[dict[str, object]],
         bus: EventBus,
         run_id: str,
+        *,
+        step: int = 0,
     ) -> LlmResponse:
         await bus.publish(
-            LlmModelSelectedEvent(run_id=run_id, model=self._model, strategy="static", ts=_now())
+            LlmModelSelectedEvent(run_id=run_id, model=self._model, strategy="static", ts=now_iso())
         )
 
         # 系统提示词
@@ -69,7 +67,7 @@ class AnthropicProvider:
         # 流式调用
         async with self._client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
-                await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=_now()))
+                await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=now_iso()))
                 text_parts.append(text)
             final_message = await stream.get_final_message()
 
@@ -84,7 +82,7 @@ class AnthropicProvider:
                 output_tokens=usage.output_tokens,
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_create,
-                ts=_now(),
+                ts=now_iso(),
             )
         )
 

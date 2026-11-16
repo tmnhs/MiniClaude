@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
 
 from mini_claude.core.bus.events import RunFinishedEvent, RunStartedEvent, StepFinishedEvent, StepStartedEvent
@@ -14,11 +13,10 @@ from mini_claude.core.llm.provider import AnthropicProvider
 from mini_claude.core.tools.builtin.read_file import ReadFileTool
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
+from mini_claude.core.trace.provider import TracingProvider
+from mini_claude.core.trace.writer import TraceWriter
 from mini_claude.core.utils.runs_dir import RUNS_DIR, new_run_id
-
-
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
+from mini_claude.core.utils.time import now_iso
 
 
 class AgentRunner:
@@ -31,12 +29,14 @@ class AgentRunner:
         provider: LLMProvider | None = None,
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
+        trace: TraceWriter | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
         self._provider = provider
         self._runs_dir = runs_dir or RUNS_DIR
         self._extra_handlers: list[EventHandler] = extra_handlers or []
+        self._trace = trace
 
     # 执行一次完整的 agent run：接线事件总线、驱动 AgentLoop
     async def run(self, goal: str, *, run_id: str | None = None) -> None:
@@ -60,10 +60,17 @@ class AgentRunner:
         # 打开事件文件，然后正式开始
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
-            await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
+            await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=now_iso()))
 
             # 准备 LLM、工具注册表、循环控制器
-            provider = self._provider or AnthropicProvider(self._config.llm.default_model)
+            provider : LLMProvider = self._provider or AnthropicProvider(self._config.llm.default_model)
+            if self._trace is not None:
+                provider = TracingProvider(
+                    provider,
+                    self._trace,
+                    include_payload=self._config.trace.include_llm_payload,
+                )
+
             registry = ToolRegistry()
             registry.register(ReadFileTool())
             loop = AgentLoop(provider, registry, bus)
@@ -82,7 +89,7 @@ class AgentRunner:
                     status=ctx.status,
                     reason=ctx.reason,
                     steps=ctx.step,
-                    ts=_now(),
+                    ts=now_iso(),
                 )
             )
 
@@ -108,7 +115,7 @@ class AgentLoop:
         while not ctx.is_done():
             ctx.step += 1
             await self._bus.publish(
-                StepStartedEvent(run_id=ctx.run_id, step=ctx.step, ts=_now())
+                StepStartedEvent(run_id=ctx.run_id, step=ctx.step, ts=now_iso())
             )
 
             # [plan] call LLM — API errors terminate the run
@@ -118,6 +125,7 @@ class AgentLoop:
                     tool_schemas=self._registry.tool_schemas(),
                     bus=self._bus,
                     run_id=ctx.run_id,
+                    step=ctx.step,
                 )
             except asyncio.CancelledError:
                 ctx.mark_failed("cancelled")
@@ -150,5 +158,5 @@ class AgentLoop:
                 ctx.mark_failed("exceeded_max_steps")
 
             await self._bus.publish(
-                StepFinishedEvent(run_id=ctx.run_id, step=ctx.step, ts=_now())
+                StepFinishedEvent(run_id=ctx.run_id, step=ctx.step, ts=now_iso())
             )
