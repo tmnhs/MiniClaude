@@ -28,6 +28,7 @@ class ReadFileTool(BaseTool):
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         path_str = str(params["path"])
 
+        # 防止目录穿越
         if ".." in Path(path_str).parts:
             raise PermissionError(f"path traversal not allowed: {path_str}")
 

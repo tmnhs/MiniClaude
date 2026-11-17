@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -8,6 +9,8 @@ from mini_claude.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, Ll
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
 from mini_claude.core.utils.time import now_iso
+
+logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "You are a helpful AI assistant. "
@@ -65,6 +68,7 @@ class AnthropicProvider:
         text_parts: list[str] = []
 
         # 流式调用
+        logger.debug("call llm with kwargs: %s", kwargs)
         async with self._client.messages.stream(**kwargs) as stream:
             async for text in stream.text_stream:
                 await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=now_iso()))

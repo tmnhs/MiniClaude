@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
+from dataclasses import dataclass
 
 from mini_claude.core.bus.events import RunFinishedEvent, RunStartedEvent, StepFinishedEvent, StepStartedEvent
 from mini_claude.core.conf.config import MiniClaudeConfig
@@ -10,13 +12,31 @@ from mini_claude.core.events.bus import EventBus , EventHandler
 from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
-from mini_claude.core.tools.builtin.read_file import ReadFileTool
+from mini_claude.core.task.manager import TaskManager
+from mini_claude.core.tools.builtin import (
+    BashTool,
+    ListDirTool,
+    ReadFileTool,
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskUpdateTool,
+    WriteFileTool,
+)
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
 from mini_claude.core.trace.provider import TracingProvider
 from mini_claude.core.trace.writer import TraceWriter
 from mini_claude.core.utils.runs_dir import RUNS_DIR, new_run_id
 from mini_claude.core.utils.time import now_iso
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class RunOutcome:
+    status: str
+    result: str
+    reason: str | None
 
 
 class AgentRunner:
@@ -38,8 +58,30 @@ class AgentRunner:
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._trace = trace
 
-    # 执行一次完整的 agent run：接线事件总线、驱动 AgentLoop
+    # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）
+    def _build_registry(self, task_manager: TaskManager) -> ToolRegistry:
+        registry = ToolRegistry()
+
+        registry.register(TaskCreateTool(task_manager))
+        registry.register(TaskUpdateTool(task_manager))
+        registry.register(TaskListTool(task_manager))
+        registry.register(TaskGetTool(task_manager))
+
+        registry.register(ReadFileTool())
+        registry.register(BashTool())
+        registry.register(WriteFileTool())
+        registry.register(ListDirTool())
+
+        return registry
+
+    # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
     async def run(self, goal: str, *, run_id: str | None = None) -> None:
+        await self.run_and_capture(goal, run_id=run_id)
+
+    # 执行 agent run 并返回 RunOutcome（含最终文字结果）
+    async def run_and_capture(
+        self, goal: str, *, run_id: str | None = None
+    ) -> RunOutcome:
         # 创建run_id对应的目录
         run_id = run_id or new_run_id()
         run_path = self._runs_dir / run_id
@@ -71,10 +113,11 @@ class AgentRunner:
                     include_payload=self._config.trace.include_llm_payload,
                 )
 
-            registry = ToolRegistry()
-            registry.register(ReadFileTool())
-            loop = AgentLoop(provider, registry, bus)
+            # 注册工具
+            task_manager = TaskManager(run_path / ".tasks")
+            registry = self._build_registry(task_manager)
 
+            loop = AgentLoop(provider, registry, bus)
             cancelled = False
             try:
                 await loop.run(ctx)
@@ -129,9 +172,11 @@ class AgentLoop:
                 )
             except asyncio.CancelledError:
                 ctx.mark_failed("cancelled")
+                logger.info("LLM call cancelled: run_id: %s, step: %d", ctx.run_id, ctx.step)
                 raise
-            except Exception:
+            except Exception as e:
                 ctx.mark_failed("llm_error")
+                logger.error("LLM call error: %s, run_id: %s, step: %d", e, ctx.run_id, ctx.step)
                 break
 
             # [observe] append assistant content blocks to ctx
@@ -155,6 +200,7 @@ class AgentLoop:
             if response.stop_reason == "end_turn":
                 ctx.mark_success()
             elif ctx.step >= ctx.max_steps:
+                logger.error("LLM call exceeded max steps: %s, run_id: %s", ctx.max_steps, ctx.run_id)
                 ctx.mark_failed("exceeded_max_steps")
 
             await self._bus.publish(
