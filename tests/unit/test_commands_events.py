@@ -42,7 +42,7 @@ def test_pong_result_roundtrip() -> None:
 # 功能：验证 CoreStartedEvent 序列化往返后 listen_addr 和 type 字段正确保留
 # 设计：CoreStartedEvent 是 daemon 启动通知，往返测试确认 type 的 Literal 约束在反序列化后保持（不被字段名覆盖）
 def test_core_started_event_roundtrip() -> None:
-    evt = CoreStartedEvent(listen_addr="127.0.0.1:7437", version="0.0.1")
+    evt = CoreStartedEvent(listen_addr="127.0.0.1:10721", version="0.0.1")
     evt2 = CoreStartedEvent.model_validate_json(evt.model_dump_json())
-    assert evt2.listen_addr == "127.0.0.1:7437"
+    assert evt2.listen_addr == "127.0.0.1:10721"
     assert evt2.type == "core.started"

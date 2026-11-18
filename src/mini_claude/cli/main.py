@@ -3,6 +3,7 @@
 import argparse
 import sys
 
+from mini_claude.cli.commands.chat import cmd_chat
 from mini_claude.cli.commands.core import (
     cmd_core_restart,
     cmd_core_start,
@@ -25,6 +26,7 @@ def main() -> None:
     # 健康检查命令
     subparsers = parser.add_subparsers(dest="command")
     subparsers.add_parser("ping", help="Ping the core daemon")
+    subparsers.add_parser("chat", help="Start a multi-turn chat session")
 
     # run 命令：启动一次 agent run
     run_parser = subparsers.add_parser("run", help="Run an agent task")
@@ -57,6 +59,8 @@ def main() -> None:
     match args.command:
         case "ping":
             cmd_ping(config)
+        case "chat":
+            cmd_chat(config)
         case "run":
             cmd_run(args.goal, config)
         case "core":

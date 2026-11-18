@@ -12,6 +12,8 @@ from mini_claude.core.events.bus import EventBus , EventHandler
 from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
+from mini_claude.core.session.model import Session
+from mini_claude.core.session.store import SessionStore
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.tools.builtin import (
     BashTool,
@@ -22,6 +24,7 @@ from mini_claude.core.tools.builtin import (
     TaskListTool,
     TaskUpdateTool,
     WriteFileTool,
+    NoteSaveTool,
 )
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
@@ -59,7 +62,14 @@ class AgentRunner:
         self._trace = trace
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）
-    def _build_registry(self, task_manager: TaskManager) -> ToolRegistry:
+    def _build_registry(
+        self,
+        task_manager: TaskManager,
+        *,
+        session: Session | None = None,
+        store: SessionStore | None = None,
+        run_id: str | None = None,
+    ) -> ToolRegistry:
         registry = ToolRegistry()
 
         registry.register(TaskCreateTool(task_manager))
@@ -72,6 +82,9 @@ class AgentRunner:
         registry.register(WriteFileTool())
         registry.register(ListDirTool())
 
+        if session is not None and store is not None and run_id is not None:
+            registry.register(NoteSaveTool(store, session.id, run_id))
+
         return registry
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
@@ -80,11 +93,23 @@ class AgentRunner:
 
     # 执行 agent run 并返回 RunOutcome（含最终文字结果）
     async def run_and_capture(
-        self, goal: str, *, run_id: str | None = None
+        self,
+        goal: str,
+        *,
+        run_id: str | None = None,
+        session: Session | None = None,
+        store: SessionStore | None = None,
     ) -> RunOutcome:
         # 创建run_id对应的目录
         run_id = run_id or new_run_id()
-        run_path = self._runs_dir / run_id
+        if session is not None and store is not None:
+            run_path = store.runs_dir(session.id) / run_id
+            history = store.read_messages(session.id)
+            notes = store.read_notes(session.id)
+        else:
+            run_path = self._runs_dir / run_id
+            history = [{"role": "user", "content": goal}]
+            notes = ""
         run_path.mkdir(parents=True, exist_ok=True)
 
         # 建立事件总线
@@ -97,6 +122,8 @@ class AgentRunner:
             run_id=run_id,
             goal=goal,
             max_steps=self._config.agent.max_steps,
+            prefill_messages=history,
+            session_notes=notes,
         )
 
         # 打开事件文件，然后正式开始
@@ -115,7 +142,12 @@ class AgentRunner:
 
             # 注册工具
             task_manager = TaskManager(run_path / ".tasks")
-            registry = self._build_registry(task_manager)
+            registry = self._build_registry(
+                task_manager,
+                session=session,
+                store=store,
+                run_id=run_id,
+            )
 
             loop = AgentLoop(provider, registry, bus)
             cancelled = False
@@ -136,8 +168,18 @@ class AgentRunner:
                 )
             )
 
+        prefill_len = len(history)
+        if session is not None and store is not None:
+            store.append_messages(session.id, ctx.messages[prefill_len:], run_id=run_id)
+
         if cancelled:
             raise asyncio.CancelledError()
+
+        return RunOutcome(
+            status=ctx.status,
+            result=ctx.result,
+            reason=ctx.reason,
+        )
 
         
 
@@ -199,6 +241,22 @@ class AgentLoop:
 
             if response.stop_reason == "end_turn":
                 ctx.mark_success()
+            elif response.stop_reason == "max_tokens":
+                # 响应被 max_tokens 截断，tool_use 块可能不完整，不能继续下一轮
+                logger.error(
+                    "LLM response truncated by max_tokens: run_id: %s, step: %d",
+                    ctx.run_id,
+                    ctx.step,
+                )
+                ctx.mark_failed("exceeded_max_tokens")
+            elif response.stop_reason != "tool_use":
+                logger.error(
+                    "LLM stopped with unsupported reason %s: run_id: %s, step: %d",
+                    response.stop_reason,
+                    ctx.run_id,
+                    ctx.step,
+                )
+                ctx.mark_failed(f"unsupported_stop_reason:{response.stop_reason}")
             elif ctx.step >= ctx.max_steps:
                 logger.error("LLM call exceeded max steps: %s, run_id: %s", ctx.max_steps, ctx.run_id)
                 ctx.mark_failed("exceeded_max_steps")
