@@ -1,10 +1,10 @@
 """
-End-to-end integration test for the S1 agent pipeline.
+S1 agent 流水线的端到端集成测试。
 
-Requires a real ANTHROPIC_API_KEY — skipped automatically when absent.
-Run explicitly:
+需要真实的 ANTHROPIC_API_KEY，缺失时会自动跳过。
+可显式运行：
     uv run pytest tests/integration/test_run_e2e.py -v
-Or with the marker:
+或使用 marker：
     uv run pytest -m integration -v
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.runner import AgentRunner
 
-# Load project .env so ANTHROPIC_API_KEY is available without going through get_config()
+# 加载项目 .env，使 ANTHROPIC_API_KEY 无需经过 get_config() 即可使用
 load_dotenv(Path(__file__).parent.parent.parent / ".env", override=False)
 
 pytestmark = pytest.mark.integration
@@ -46,7 +46,7 @@ async def test_run_e2e_reads_file_and_succeeds(
     if not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("ANTHROPIC_API_KEY not set")
 
-    # ReadFileTool resolves paths relative to CWD — point it at tmp_path
+    # ReadFileTool 按 CWD 解析路径，因此切换到 tmp_path
     monkeypatch.chdir(tmp_path)
 
     goal = (

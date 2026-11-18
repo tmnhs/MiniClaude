@@ -16,7 +16,7 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    return port  # socket released; daemon can bind to this port
+    return port  # socket 已释放，daemon 可以绑定该端口
 
 
 @pytest.fixture

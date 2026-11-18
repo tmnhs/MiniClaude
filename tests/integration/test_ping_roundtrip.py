@@ -58,7 +58,7 @@ async def test_unknown_method_returns_error(
 
     resp = json.loads(line)
     assert "error" in resp
-    assert resp["error"]["code"] == -32601  # METHOD_NOT_FOUND
+    assert resp["error"]["code"] == -32601  # METHOD_NOT_FOUND（方法不存在）
 
 
 # 功能：验证发送非 JSON 数据时 daemon 返回 PARSE_ERROR（-32700）并不崩溃
@@ -77,4 +77,4 @@ async def test_invalid_json_returns_error(
 
     resp = json.loads(line)
     assert "error" in resp
-    assert resp["error"]["code"] == -32700  # PARSE_ERROR
+    assert resp["error"]["code"] == -32700  # PARSE_ERROR（解析错误）

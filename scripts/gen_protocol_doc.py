@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate WIRE_PROTOCOL.md from pydantic models in mini_claude.core.bus."""
+"""根据 mini_claude.core.bus 中的 pydantic 模型生成 WIRE_PROTOCOL.md。"""
 from __future__ import annotations
 
 import argparse
@@ -218,8 +218,8 @@ def generate() -> str:
         "\n",
         _model_section("ToolCallFailedEvent", ToolCallFailedEvent,
             {"type": "tool.call_failed", "run_id": run_id, "tool_use_id": "toolu_02",
-             "tool_name": "read_file", "error_type": "runtime_error",
-             "error_message": "file not found", "elapsed_ms": 1, "ts": ts}),
+             "tool_name": "read_file", "error_class": "runtime_error",
+             "error_message": "file not found", "elapsed_ms": 1, "attempt": 1, "ts": ts}),
         "\n",
         _model_section("LlmModelSelectedEvent", LlmModelSelectedEvent,
             {"type": "llm.model_selected", "run_id": run_id,

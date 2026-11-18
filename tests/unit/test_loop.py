@@ -12,11 +12,11 @@ from mini_claude.core.runner import AgentLoop
 from mini_claude.core.tools.base import BaseTool, ToolResult
 from mini_claude.core.tools.registry import ToolRegistry
 
-# --- stubs -------------------------------------------------------------------
+# --- 测试桩 -------------------------------------------------------------------
 
 
 class _MockProvider:
-    """Returns canned responses in order; raises exc immediately if given."""
+    """按顺序返回预设响应；传入异常时立即抛出。"""
 
     def __init__(
         self,
@@ -34,6 +34,7 @@ class _MockProvider:
         run_id: str,
         *,
         step: int = 0,
+        system: str | None = None,
     ) -> LlmResponse:
         if self._exc is not None:
             raise self._exc
@@ -147,7 +148,7 @@ async def test_tool_result_appended_to_context() -> None:
     loop, _ = _make_loop(provider, registry)
     ctx = _ctx()
     await loop.run(ctx)
-    # messages: [goal, assistant(tool_use), user(tool_result), assistant(end_turn)]
+    # 消息序列：[goal, assistant(tool_use), user(tool_result), assistant(end_turn)]
     tool_result_msg = ctx.messages[2]
     assert tool_result_msg["role"] == "user"
     block = tool_result_msg["content"][0]  # type: ignore[index]

@@ -13,7 +13,7 @@ class PingCommand(BaseModel):
 class PongResult(BaseModel):
     server_version: str
     uptime_ms: int
-    received_at: str  # ISO 8601
+    received_at: str  # ISO 8601 时间戳
 
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
@@ -82,6 +82,15 @@ class SessionCloseCommand(BaseModel):
 class SessionCloseResult(BaseModel):
     status: SessionStatus
 
+class PermissionRespondCommand(BaseModel):
+    type: Literal["permission.respond"] = "permission.respond"
+    tool_use_id: str
+    # "allow_once" | "always_allow" | "deny_once" | "always_deny"
+    decision: str
+
+class PermissionRespondResult(BaseModel):
+    ok: bool = True
+
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     PingCommand
@@ -90,7 +99,8 @@ Command = Annotated[
     | SessionCreateCommand
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
-    | SessionCloseCommand,
+    | SessionCloseCommand
+    | PermissionRespondCommand,
     Discriminator("type"),
 ]
 

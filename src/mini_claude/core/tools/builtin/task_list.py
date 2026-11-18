@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.tools.base import BaseTool, ToolResult
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaskListTool(BaseTool):

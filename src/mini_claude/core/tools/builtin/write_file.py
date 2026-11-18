@@ -6,8 +6,15 @@ from mini_claude.core.tools.base import BaseTool, ToolResult
 
 _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 
+from pydantic import BaseModel, ConfigDict, Field
+
+class WriteFileParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    path: str
+    content: str
 
 class WriteFileTool(BaseTool):
+    params_model = WriteFileParams
     name = "write_file"
     description = (
         "Write text content to a file, creating it (and any parent directories) if it "
@@ -32,8 +39,9 @@ class WriteFileTool(BaseTool):
 
     # 写入文件内容；超 1MB 拒绝；禁止 .. 路径遍历；自动创建父目录
     async def invoke(self, params: dict[str, object]) -> ToolResult:
-        path_str = str(params["path"])
-        content = str(params["content"])
+        p = WriteFileParams.model_validate(params)
+        path_str = p.path
+        content = p.content
 
         # 防止目录穿越
         if ".." in Path(path_str).parts:

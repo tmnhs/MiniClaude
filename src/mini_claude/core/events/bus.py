@@ -7,7 +7,7 @@ from pydantic import BaseModel
 type EventHandler = Callable[[BaseModel], Awaitable[None]]
 
 class EventBus:
-    def __init__(self):
+    def __init__(self) -> None:
         self._subscribers: list[EventHandler] = []
 
     # 注册一个事件处理函数

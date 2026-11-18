@@ -14,7 +14,7 @@ class TraceRecord(BaseModel):
         "LLM→CORE",
     ]
     layer: Literal["ipc", "event", "llm"]
-    kind: str  # command / response / error / push / event / api_call / api_response
+    kind: str  # 类型：command / response / error / push / event / api_call / api_response
     run_id: str | None = None
     step: int | None = None
     client_id: str | None = None

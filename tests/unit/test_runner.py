@@ -10,11 +10,11 @@ from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock
 from mini_claude.core.runner import AgentRunner
 
-# --- mock provider -----------------------------------------------------------
+# --- 模拟 provider -----------------------------------------------------------
 
 
 class _EndTurnProvider:
-    """Immediately returns end_turn; no API calls made."""
+    """立即返回 end_turn，不进行任何 API 调用。"""
 
     async def chat(
         self,
@@ -24,12 +24,13 @@ class _EndTurnProvider:
         run_id: str,
         *,
         step: int = 0,
+        system: str | None = None,
     ) -> LlmResponse:
         return LlmResponse(stop_reason="end_turn", text="done")
 
 
 class _LoopingProvider:
-    """Always returns tool_use with an unknown tool to exhaust max_steps."""
+    """始终返回未知工具的 tool_use，以耗尽 max_steps。"""
 
     def __init__(self) -> None:
         self._call = 0
@@ -42,10 +43,34 @@ class _LoopingProvider:
         run_id: str,
         *,
         step: int = 0,
+        system: str | None = None,
     ) -> LlmResponse:
         self._call += 1
         tc = ToolCallBlock(id=f"t{self._call}", name="unknown_tool", input={})
         return LlmResponse(stop_reason="tool_use", tool_calls=[tc])
+
+
+class _CapturingProvider:
+    # 初始化捕获型 provider，保存固定响应
+    def __init__(self, response: LlmResponse) -> None:
+        self.response = response
+        self.messages: list[dict[str, object]] = []
+        self.system: str | None = None
+
+    # 捕获本次 LLM 调用的 messages 和 system prompt
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+    ) -> LlmResponse:
+        self.messages = [dict(m) for m in messages]
+        self.system = system
+        return self.response
 
 
 # --- helpers -----------------------------------------------------------------
@@ -200,3 +225,87 @@ async def test_injected_bus_receives_events(tmp_path: Path) -> None:
     types = [e.type for e in collected]  # type: ignore[attr-defined]
     assert "run.started" in types
     assert "run.finished" in types
+
+
+# 功能：验证 session run 会从 thread.jsonl 预填 messages，并把 notes 注入 system prompt
+# 设计：用 CapturingProvider 截获 LLM 入参，不触发真实 API；同时断言 run 目录写到 session/runs 下
+async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
+    from mini_claude.core.session.model import Session
+    from mini_claude.core.session.store import SessionStore
+
+    store = SessionStore(tmp_path / "sessions")
+    session = Session(
+        id="sess-1",
+        mode="chat",
+        status="active",
+        title="",
+        created_at="t",
+        updated_at="t",
+    )
+    store.write_meta(session)
+    store.append_message("sess-1", "user", "remember python")
+    store.append_note("sess-1", "Python 3.12", "run-old")
+
+    provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
+    runner = AgentRunner(_config(), provider=provider, runs_dir=tmp_path / "runs")
+
+    await runner.run_and_capture("remember python", run_id="run-new", session=session, store=store)
+
+    assert provider.messages == [{"role": "user", "content": "remember python"}]
+    assert provider.system is not None
+    assert "Python 3.12" in provider.system
+    assert (store.runs_dir("sess-1") / "run-new" / "events.jsonl").exists()
+    assert not (tmp_path / "runs" / "run-new").exists()
+
+
+# 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md
+# 设计：mock provider 第一步请求 note_save、第二步 end_turn，覆盖 runner→registry→tool 的完整路径
+async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
+    from mini_claude.core.session.model import Session
+    from mini_claude.core.session.store import SessionStore
+
+    class _NoteProvider:
+        # 初始化调用计数器，用于返回两步响应
+        def __init__(self) -> None:
+            self.calls = 0
+
+        # 第一步请求 note_save，第二步返回 end_turn
+        async def chat(
+            self,
+            messages: list[dict[str, object]],
+            tool_schemas: list[dict[str, object]],
+            bus: EventBus,
+            run_id: str,
+            *,
+            step: int = 0,
+            system: str | None = None,
+        ) -> LlmResponse:
+            self.calls += 1
+            if self.calls == 1:
+                return LlmResponse(
+                    stop_reason="tool_use",
+                    tool_calls=[
+                        ToolCallBlock(
+                            id="note-1",
+                            name="note_save",
+                            input={"content": "Use Python 3.12"},
+                        )
+                    ],
+                )
+            return LlmResponse(stop_reason="end_turn", text="noted")
+
+    store = SessionStore(tmp_path / "sessions")
+    session = Session(
+        id="sess-1",
+        mode="chat",
+        status="active",
+        title="",
+        created_at="t",
+        updated_at="t",
+    )
+    store.append_message("sess-1", "user", "remember")
+
+    runner = AgentRunner(_config(max_steps=3), provider=_NoteProvider(), runs_dir=tmp_path)
+    await runner.run_and_capture("remember", run_id="run-1", session=session, store=store)
+
+    assert "Use Python 3.12" in store.read_notes("sess-1")

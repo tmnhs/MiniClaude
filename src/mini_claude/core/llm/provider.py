@@ -39,17 +39,22 @@ class AnthropicProvider:
         run_id: str,
         *,
         step: int = 0,
+        system: str | None = None,
     ) -> LlmResponse:
         await bus.publish(
             LlmModelSelectedEvent(run_id=run_id, model=self._model, strategy="static", ts=now_iso())
         )
 
-        # 系统提示词
-        system: list[dict[str, object]] = [
-            {"type": "text", "text": _SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}},
+        # 系统提示词（调用方未提供时回退到内置提示）
+        system_blocks: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": system or _SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            },
         ]
 
-        # tools块 使用缓存
+        # 对 tools 块启用缓存
         tools: list[dict[str, object]] = list(tool_schemas)
         if tools:
             last = dict(tools[-1])
@@ -59,7 +64,7 @@ class AnthropicProvider:
         kwargs: dict[str, object] = {
             "model": self._model,
             "max_tokens": 4096,
-            "system": system,
+            "system": system_blocks,
             "messages": messages,
         }
         if tools:

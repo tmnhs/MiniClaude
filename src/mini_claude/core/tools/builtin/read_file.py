@@ -3,10 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
+from pydantic import BaseModel, ConfigDict, Field
 
 _MAX_BYTES = 512 * 1024  # 512 KB
 
+class ReadFileParams(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    path: str
+
 class ReadFileTool(BaseTool):
+    params_model = ReadFileParams
     name = "read_file"
     description = (
         "Read the text content of a file. "
@@ -26,14 +32,14 @@ class ReadFileTool(BaseTool):
 
     # 读取文件内容；超 512KB 截断；禁止 .. 路径遍历
     async def invoke(self, params: dict[str, object]) -> ToolResult:
-        path_str = str(params["path"])
+        path_str = ReadFileParams.model_validate(params).path
 
         # 防止目录穿越
         if ".." in Path(path_str).parts:
             raise PermissionError(f"path traversal not allowed: {path_str}")
 
         path = Path(path_str)
-        raw = path.read_bytes()  # raises FileNotFoundError if absent
+        raw = path.read_bytes()  # 文件不存在时抛出 FileNotFoundError
         truncated = len(raw) > _MAX_BYTES
         text = raw[:_MAX_BYTES].decode("utf-8", errors="replace")
         if truncated:

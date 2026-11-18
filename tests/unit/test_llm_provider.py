@@ -41,7 +41,7 @@ def _make_final(
 
 
 class FakeStream:
-    """Minimal async context manager that fakes the anthropic streaming interface."""
+    """最小化的 async 上下文管理器，模拟 Anthropic 流式接口。"""
 
     def __init__(self, texts: list[str], final: MagicMock) -> None:
         self._texts = texts

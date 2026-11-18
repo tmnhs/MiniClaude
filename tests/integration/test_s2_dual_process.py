@@ -98,7 +98,7 @@ async def test_disconnect_and_replay_from_run(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
 ) -> None:
-    # Phase 1: trigger a run and wait for run.started to be written to disk
+    # 阶段 1：触发一次 run，等待 run.started 落盘
     client1 = SocketClient("127.0.0.1", free_port)
     await client1.connect()
 
@@ -125,10 +125,10 @@ async def test_disconnect_and_replay_from_run(
     assert run_id_holder, "run.started was never received"
     run_id = run_id_holder[0]
 
-    # Brief pause to ensure the event is flushed to disk before we replay
+    # 稍作停顿，确保事件在 replay 前已刷入磁盘
     await asyncio.sleep(0.05)
 
-    # Phase 2: reconnect with replay_from_run and verify replayed_count > 0
+    # 阶段 2：带 replay_from_run 重连，并验证 replayed_count > 0
     client2 = SocketClient("127.0.0.1", free_port)
     await client2.connect()
     loop2 = asyncio.create_task(client2.run_event_loop())

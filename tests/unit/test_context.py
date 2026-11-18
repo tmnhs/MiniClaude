@@ -72,7 +72,7 @@ def test_multiple_tool_results_share_one_message() -> None:
     ctx.add_tool_result("toolu_01", "result A")
     ctx.add_tool_result("toolu_02", "result B")
 
-    # goal + assistant + tool_results（合并为一条）
+    # 消息序列：goal + assistant + tool_results（合并为一条）
     assert len(ctx.messages) == 3
     last = ctx.messages[-1]
     assert last["role"] == "user"

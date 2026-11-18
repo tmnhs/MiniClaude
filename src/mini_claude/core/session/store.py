@@ -101,7 +101,7 @@ class SessionStore:
 
         return self._trim_orphan_tool_use(messages)
 
-    # Anthropic的消息格式要求tool_use后面必须有匹配的tool_result
+    # Anthropic 消息格式要求 tool_use 后面必须有匹配的 tool_result
     # 裁掉尾部未配对 tool_use 以及其后的消息，避免 Anthropic messages.invalid
     def _trim_orphan_tool_use(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         pending: set[str] = set()

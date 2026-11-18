@@ -4,10 +4,9 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from pydantic.v1 import BaseModel
+from pydantic import BaseModel
 
 from mini_claude.core.bus.envelope import EventPushEnvelope
-from mini_claude.core.trace.record import TraceRecord
 from mini_claude.core.trace.record import TraceRecord
 from mini_claude.core.trace.writer import TraceWriter
 from mini_claude.core.utils.time import now_iso

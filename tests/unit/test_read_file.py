@@ -46,7 +46,7 @@ async def test_truncation_over_512kb(tmp_path: Path) -> None:
     result = await ReadFileTool().invoke({"path": str(f)})
     assert not result.is_error
     assert result.content.endswith("[truncated]")
-    # Actual text content is exactly 512KB worth of 'x' chars
+    # 实际文本内容恰好是 512KB 的 'x' 字符
     assert result.content.startswith("x" * (512 * 1024))
 
 

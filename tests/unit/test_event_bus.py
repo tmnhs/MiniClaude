@@ -64,4 +64,4 @@ async def test_subscribers_called_in_order() -> None:
 # 设计：只调用 publish，不断言返回值，以"不引发异常"作为唯一判据
 async def test_no_subscribers_publish_is_noop() -> None:
     bus = EventBus()
-    await bus.publish(_FakeEvent(value="x"))  # should not raise
+    await bus.publish(_FakeEvent(value="x"))  # 不应抛出异常

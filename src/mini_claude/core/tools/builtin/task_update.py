@@ -5,7 +5,7 @@ import json
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.task.model import TaskStatus
 from mini_claude.core.tools.base import BaseTool, ToolResult
-
+from pydantic import BaseModel, ConfigDict, Field
 
 class TaskUpdateTool(BaseTool):
     name = "task_update"

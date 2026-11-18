@@ -12,6 +12,7 @@ from mini_claude.core.events.bus import EventBus , EventHandler
 from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
+from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.session.model import Session
 from mini_claude.core.session.store import SessionStore
 from mini_claude.core.task.manager import TaskManager
@@ -35,6 +36,12 @@ from mini_claude.core.utils.time import now_iso
 
 logger = logging.getLogger(__name__)
 
+_AGENT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant. "
+    "Use the available tools to complete the user's goal. "
+    "When the goal is fully achieved, respond with a final answer and do not call any more tools."
+)
+
 @dataclass
 class RunOutcome:
     status: str
@@ -53,6 +60,7 @@ class AgentRunner:
         extra_handlers: list[EventHandler] | None = None,
         runs_dir: Path | None = None,
         trace: TraceWriter | None = None,
+        permission_manager: PermissionManager | None = None,
     ) -> None:
         self._config = config
         self._bus = bus
@@ -60,6 +68,7 @@ class AgentRunner:
         self._runs_dir = runs_dir or RUNS_DIR
         self._extra_handlers: list[EventHandler] = extra_handlers or []
         self._trace = trace
+        self._permission_manager = permission_manager
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）
     def _build_registry(
@@ -149,7 +158,11 @@ class AgentRunner:
                 run_id=run_id,
             )
 
-            loop = AgentLoop(provider, registry, bus)
+            loop = AgentLoop(
+                    provider, registry, bus,
+                    permission_manager=self._permission_manager,
+                    session_id=session.id if session is not None else "",
+                )
             cancelled = False
             try:
                 await loop.run(ctx)
@@ -157,6 +170,12 @@ class AgentRunner:
                 cancelled = True
                 if not ctx.is_done():
                     ctx.mark_failed("cancelled")
+            except Exception:
+                logger.exception(
+                    "agent run failed run_id=%s step=%d", run_id, ctx.step
+                )
+                if not ctx.is_done():
+                    ctx.mark_failed("llm_error")
 
             await bus.publish(
                 RunFinishedEvent(
@@ -190,10 +209,15 @@ class AgentLoop:
         provider: LLMProvider,
         registry: ToolRegistry,
         bus: EventBus,
+        *,
+        permission_manager: PermissionManager | None = None,
+        session_id: str = "",
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._bus = bus
+        self._permission_manager = permission_manager
+        self._session_id = session_id
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, ctx: ExecutionContext) -> None:
@@ -211,6 +235,7 @@ class AgentLoop:
                     bus=self._bus,
                     run_id=ctx.run_id,
                     step=ctx.step,
+                    system=ctx.system_prompt(_AGENT_SYSTEM_PROMPT),
                 )
             except asyncio.CancelledError:
                 ctx.mark_failed("cancelled")
@@ -235,7 +260,9 @@ class AgentLoop:
             if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
                     result = await invoke_tool(
-                        self._registry, tc, self._bus, ctx.run_id
+                        self._registry, tc, self._bus, ctx.run_id,
+                        permission_manager=self._permission_manager,
+                        session_id=self._session_id,
                     )
                     ctx.add_tool_result(tc.id, result.content, is_error=result.is_error)
 
