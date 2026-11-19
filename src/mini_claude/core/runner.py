@@ -6,12 +6,14 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from mini_claude.core.bus.events import RunFinishedEvent, RunStartedEvent, StepFinishedEvent, StepStartedEvent
+from mini_claude.core.compact.compactor import Compactor
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.context import ExecutionContext
 from mini_claude.core.events.bus import EventBus , EventHandler
 from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
+from mini_claude.core.memory.loader import load_context_file
 from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.session.model import Session
 from mini_claude.core.session.store import SessionStore
@@ -126,6 +128,9 @@ class AgentRunner:
         for handler in self._extra_handlers:
             bus.subscribe(handler)
 
+        global_ctx = load_context_file(Path("~/.mc/context.md").expanduser())
+        project_ctx = load_context_file(Path(".mc/context.md"))
+
         # 创建工作记忆
         ctx = ExecutionContext(
             run_id=run_id,
@@ -133,6 +138,8 @@ class AgentRunner:
             max_steps=self._config.agent.max_steps,
             prefill_messages=history,
             session_notes=notes,
+            global_context=global_ctx,
+            project_context=project_ctx,
         )
 
         # 打开事件文件，然后正式开始
@@ -158,11 +165,21 @@ class AgentRunner:
                 run_id=run_id,
             )
 
+            session_dir = (
+                store.session_dir(session.id)
+                if session is not None and store is not None
+                else run_path
+            )
+            session_id_str = session.id if session is not None else ""
+            compactor = Compactor(bus, session_dir, session_id_str)
             loop = AgentLoop(
                     provider, registry, bus,
                     permission_manager=self._permission_manager,
-                    session_id=session.id if session is not None else "",
+                    compactor=compactor,
+                    compact_threshold=self._config.compaction.auto_threshold,
+                    session_id=session_id_str,
                 )
+
             cancelled = False
             try:
                 await loop.run(ctx)
@@ -212,12 +229,16 @@ class AgentLoop:
         *,
         permission_manager: PermissionManager | None = None,
         session_id: str = "",
+        compactor: Compactor | None = None,
+        compact_threshold: float = 0.80,
     ) -> None:
         self._provider = provider
         self._registry = registry
         self._bus = bus
         self._permission_manager = permission_manager
         self._session_id = session_id
+        self._compactor = compactor
+        self._compact_threshold = compact_threshold
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, ctx: ExecutionContext) -> None:
@@ -265,28 +286,43 @@ class AgentLoop:
                         session_id=self._session_id,
                     )
                     ctx.add_tool_result(tc.id, result.content, is_error=result.is_error)
+            elif response.stop_reason == "max_tokens" and response.tool_calls:
+                # Output token limit hit mid-tool-call; input is incomplete.
+                # Add synthetic error results so the conversation stays balanced.
+                for tc in response.tool_calls:
+                    ctx.add_tool_result(
+                        tc.id,
+                        "Error: output token limit reached before this tool call could be completed. "
+                        "Please break the task into smaller steps and try again.",
+                        is_error=True,
+                    )
 
             if response.stop_reason == "end_turn":
+                ctx.result = response.text or ""
                 ctx.mark_success()
-            elif response.stop_reason == "max_tokens":
-                # 响应被 max_tokens 截断，tool_use 块可能不完整，不能继续下一轮
-                logger.error(
-                    "LLM response truncated by max_tokens: run_id: %s, step: %d",
-                    ctx.run_id,
-                    ctx.step,
-                )
-                ctx.mark_failed("exceeded_max_tokens")
             elif response.stop_reason != "tool_use":
-                logger.error(
+                logger.warning(
                     "LLM stopped with unsupported reason %s: run_id: %s, step: %d",
                     response.stop_reason,
                     ctx.run_id,
                     ctx.step,
                 )
-                ctx.mark_failed(f"unsupported_stop_reason:{response.stop_reason}")
+                # ctx.mark_failed(f"unsupported_stop_reason:{response.stop_reason}")
             elif ctx.step >= ctx.max_steps:
                 logger.error("LLM call exceeded max steps: %s, run_id: %s", ctx.max_steps, ctx.run_id)
                 ctx.mark_failed("exceeded_max_steps")
+
+            # 工具结果追加完毕（messages 末尾为 user）后检查压缩，仅在 run 继续时触发
+            # 此时压缩结果 [user_summary, assistant_ack] 对下一次 LLM 调用是合法输入
+            if (
+                not ctx.is_done()
+                and response.stop_reason == "tool_use"
+                and self._compactor is not None
+                and self._compact_threshold > 0
+                and response.usage is not None
+                and response.usage.context_pct >= self._compact_threshold
+            ):
+                await self._compactor.compact(ctx, self._provider)
 
             await self._bus.publish(
                 StepFinishedEvent(run_id=ctx.run_id, step=ctx.step, ts=now_iso())

@@ -22,6 +22,8 @@ from mini_claude.core.bus.commands import (
     PongResult,
     SessionCloseCommand,
     SessionCloseResult,
+    SessionCompactCommand,
+    SessionCompactResult,
     SessionCreateCommand,
     SessionCreateResult,
     SessionGetHistoryCommand,
@@ -32,6 +34,7 @@ from mini_claude.core.bus.commands import (
 from mini_claude.core.bus.envelope import EventPushEnvelope
 from mini_claude.core.conf.config import MiniClaudeConfig, get_config
 from mini_claude.core.events.bus import EventBus
+from mini_claude.core.llm.provider import AnthropicProvider
 from mini_claude.core.log.logging_setup import setup_logging
 from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.permissions.store import load_policy_file
@@ -126,6 +129,13 @@ class CoreApp():
         cmd = SessionCloseCommand.model_validate(params)
         await self._sessions.close(cmd.session_id)
         return SessionCloseResult(status="closed")
+
+    # 手动压缩 session thread，将摘要持久化写入 thread.jsonl
+    async def _session_compact_handler(self, params: dict[str, Any]) -> SessionCompactResult:
+        assert self._sessions is not None
+        cmd = SessionCompactCommand.model_validate(params)
+        result = await self._sessions.compact(cmd.session_id, cmd.focus)
+        return result  # type: ignore[no-any-return]
 
     # 注册客户端事件订阅，可选先回放 events.jsonl 历史再接收实时流
     async def _subscribe_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
@@ -228,6 +238,7 @@ class CoreApp():
         # 初始化Session管理器
         sessions_root = Path("~/.mc/sessions").expanduser()
         store = SessionStore(sessions_root)
+        compact_provider = AnthropicProvider(self._config.llm.default_model)
         self._sessions = SessionManager(
             store,
             runner_factory=lambda: AgentRunner( 
@@ -237,6 +248,7 @@ class CoreApp():
                 permission_manager=self._permission_manager,
             ),  
             bus=self._bus,
+            provider=compact_provider,
         )
 
         server = SocketServer(
@@ -255,6 +267,7 @@ class CoreApp():
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
+        server.register("session.compact", self._session_compact_handler)
 
         addr = await server.start()
         logger.info("mini-core %s listening addr=%s", mini_claude.__version__, addr)

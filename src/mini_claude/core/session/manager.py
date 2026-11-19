@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from mini_claude.core.bus.envelope import HandlerError
 from mini_claude.core.bus.events import SessionClosedEvent, SessionCreatedEvent, SessionMessageReceivedEvent, SessionResumedEvent, SessionWaitingForInputEvent
 from mini_claude.core.events.bus import EventBus
+from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.session.model import Session, SessionMode
 from mini_claude.core.session.store import SessionStore
 from mini_claude.core.utils.runs_dir import new_run_id
@@ -28,10 +29,12 @@ class SessionManager:
         store: SessionStore,
         runner_factory: Callable[[], AgentRunner],
         bus: EventBus,
+        provider: LLMProvider | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
+        self._provider = provider
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
@@ -111,6 +114,38 @@ class SessionManager:
 
             self._store.write_meta(session)
             return run_id
+
+    # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
+    async def compact(self, sid: str, focus: str = "") -> Any:
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+
+        if self._provider is None:
+            raise HandlerError(-32020, "provider not available for compaction")
+
+        async with lock:
+            from mini_claude.core.bus.commands import SessionCompactResult
+            from mini_claude.core.compact.compactor import Compactor
+
+            messages = self._store.read_messages(sid)
+            session_dir = self._store.session_dir(sid)
+            compactor = Compactor(self._bus, session_dir, sid)
+
+            result = await compactor.compact_messages(messages, self._provider, focus=focus)
+            if result is None:
+                raise HandlerError(-32021, "compaction failed or not beneficial")
+
+            self._store.write_compacted(sid, [
+                {"role": "user", "content": result.summary_text},
+                {"role": "assistant", "content": "Understood, I'll continue from this summary."},
+            ])
+    
+            return SessionCompactResult(
+                summary_tokens=result.summary_tokens,
+                saved_tokens=max(0, result.original_token_estimate - result.summary_tokens),
+            )
 
     # 关闭指定 session 并更新 meta.json
     async def close(self, sid: str) -> None:

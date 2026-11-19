@@ -91,6 +91,15 @@ class PermissionRespondCommand(BaseModel):
 class PermissionRespondResult(BaseModel):
     ok: bool = True
 
+class SessionCompactCommand(BaseModel):
+    type: Literal["session.compact"] = "session.compact"
+    session_id: str
+    focus: str = ""
+
+class SessionCompactResult(BaseModel):
+    summary_tokens: int
+    saved_tokens: int
+
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     PingCommand
@@ -100,7 +109,8 @@ Command = Annotated[
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
     | SessionCloseCommand
-    | PermissionRespondCommand,
+    | PermissionRespondCommand
+    | SessionCompactCommand,
     Discriminator("type"),
 ]
 

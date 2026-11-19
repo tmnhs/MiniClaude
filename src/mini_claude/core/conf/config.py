@@ -7,54 +7,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-_DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 10721
-_DEFAULT_LOG_LEVEL = "INFO"
-_DEFAULT_LOG_FILE = "~/.mc/logs/core.log"
-_DEFAULT_LOG_FORMAT = "text"
-_DEFAULT_CONFIG_PATH = "~/.mc/config.toml"
-_DEFAULT_MAX_STEPS = 20
-_DEFAULT_MODEL = "claude-sonnet-4-6"
-_DEFAULT_TRACE_FILE = "~/.mc/logs/trace.jsonl"
-
-
-@dataclass
-class LoggingConfig:
-    level: str = _DEFAULT_LOG_LEVEL
-    file: str = _DEFAULT_LOG_FILE
-    format: str = _DEFAULT_LOG_FORMAT  # "text" | "json"
-
-
-@dataclass
-class AgentConfig:
-    max_steps: int = _DEFAULT_MAX_STEPS
-
-
-@dataclass
-class LlmConfig:
-    default_model: str = _DEFAULT_MODEL
-    router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
-
-
-@dataclass
-class TraceConfig:
-    enabled: bool = False
-    file: str = _DEFAULT_TRACE_FILE
-    include_llm_payload: bool = False
-
-@dataclass
-class PermissionConfig:
-    timeout_s: float = 60.0  # 审批超时秒数；0 表示不超时
-
-@dataclass
-class MiniClaudeConfig:
-    host: str = _DEFAULT_HOST
-    port: int = _DEFAULT_PORT
-    logging: LoggingConfig = field(default_factory=LoggingConfig)
-    agent: AgentConfig = field(default_factory=AgentConfig)
-    llm: LlmConfig = field(default_factory=LlmConfig)
-    trace: TraceConfig = field(default_factory=TraceConfig)
-    permission: PermissionConfig = field(default_factory=PermissionConfig)
+from mini_claude.core.conf.model import _DEFAULT_CONFIG_PATH, MiniClaudeConfig
 
 
 # 构建并返回运行时配置：默认值 → TOML → .env → 系统环境变量（后者优先级最高）
@@ -80,7 +33,7 @@ def get_config() -> MiniClaudeConfig:
 
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程
 def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
-    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission"}
+    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission","compaction"}
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
 
@@ -183,6 +136,29 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
                 raise SystemExit("Config error: permission.timeout_s must be a non-negative number")
             config.permission.timeout_s = float(val)
 
+    if "compaction" in data:
+        comp = data["compaction"]
+        if not isinstance(comp, dict):
+            raise SystemExit("Config error: [compaction] must be a table")
+        unknown_comp: set[str] = set(comp.keys()) - {"auto_threshold", "tool_result_limit", "tool_result_keep"}
+        if unknown_comp:
+            raise SystemExit(f"Unknown [compaction] keys: {', '.join(sorted(unknown_comp))}")
+        if "auto_threshold" in comp:
+            val = comp["auto_threshold"]
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise SystemExit("Config error: compaction.auto_threshold must be between 0 and 1")
+            config.compaction.auto_threshold = float(val)
+        if "tool_result_limit" in comp:
+            val = comp["tool_result_limit"]
+            if not isinstance(val, int) or val <= 0:
+                raise SystemExit("Config error: compaction.tool_result_limit must be a positive integer")
+            config.compaction.tool_result_limit = val
+        if "tool_result_keep" in comp:
+            val = comp["tool_result_keep"]
+            if not isinstance(val, int) or val <= 0:
+                raise SystemExit("Config error: compaction.tool_result_keep must be a positive integer")
+            config.compaction.tool_result_keep = val
+
 
 # 用 MINICLAUDE_* 环境变量覆盖 config 中对应字段（若变量已设置）
 def _apply_env(config: MiniClaudeConfig) -> None:
@@ -252,4 +228,47 @@ def _apply_env(config: MiniClaudeConfig) -> None:
         except ValueError:
             raise SystemExit(
                 f"Config error: MINICLAUDE_PERMISSION_TIMEOUT_S must be a number, got: {perm_timeout!r}"
+            )
+
+
+    compact_threshold = os.environ.get("MINICLAUDE_COMPACT_THRESHOLD")
+    if compact_threshold is not None:
+        try:
+            compact_threshold_val = float(compact_threshold)
+            if not (0.0 <= compact_threshold_val <= 1.0):
+                raise SystemExit(
+                    f"Config error: MINICLAUDE_COMPACT_THRESHOLD must be between 0 and 1, got: {compact_threshold!r}"
+                )
+            config.compaction.auto_threshold = compact_threshold_val
+        except ValueError:
+            raise SystemExit(
+                f"Config error: MINICLAUDE_COMPACT_THRESHOLD must be a number, got: {compact_threshold!r}"
+            )
+
+    compact_tool_limit = os.environ.get("MINICLAUDE_COMPACT_TOOL_LIMIT")
+    if compact_tool_limit is not None:
+        try:
+            compact_tool_limit_val = int(compact_tool_limit)
+            if compact_tool_limit_val <= 0:
+                raise SystemExit(
+                    f"Config error: MINICLAUDE_COMPACT_TOOL_LIMIT must be a positive integer, got: {compact_tool_limit!r}"
+                )
+            config.compaction.tool_result_limit = compact_tool_limit_val
+        except ValueError:
+            raise SystemExit(
+                f"Config error: MINICLAUDE_COMPACT_TOOL_LIMIT must be an integer, got: {compact_tool_limit!r}"
+            )
+
+    compact_tool_keep = os.environ.get("MINICLAUDE_COMPACT_TOOL_KEEP")
+    if compact_tool_keep is not None:
+        try:
+            compact_tool_keep_val = int(compact_tool_keep)
+            if compact_tool_keep_val <= 0:
+                raise SystemExit(
+                    f"Config error: MINICLAUDE_COMPACT_TOOL_KEEP must be a positive integer, got: {compact_tool_keep!r}"
+                )
+            config.compaction.tool_result_keep = compact_tool_keep_val
+        except ValueError:
+            raise SystemExit(
+                f"Config error: MINICLAUDE_COMPACT_TOOL_KEEP must be an integer, got: {compact_tool_keep!r}"
             )

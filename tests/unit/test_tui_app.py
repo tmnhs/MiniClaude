@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from rich.markdown import Markdown
+from rich.text import Text
 from textual.widget import Widget
 from textual.widgets import Static
 
-from mini_claude.tui.app import (
+from mini_claude.tui.app import MiniClaudeTuiApp
+from mini_claude.tui.widgets import (
     LLMStreamBlock,
-    MiniClaudeTuiApp,
     ToolCallBlock,
     _param_summary,
     _preview,
@@ -208,6 +209,29 @@ def test_note_save_tool_block_shows_remembered() -> None:
     block = ToolCallBlock("note_save", {"content": "Python 3.12"})
     block.set_result("saved", 3)
     assert "remembered" in block._summary()
+
+
+# 功能：验证工具参数/输出中的 Rich markup 非法片段被转义，不会让摘要或展开详情崩溃
+# 设计：用带 "[/not-a-tag]" 的 bash 命令构造 ToolCallBlock，分别解析摘要和点击后的详情文本；
+#       未转义时 Text.from_markup 会抛 MarkupError，复现过真实崩溃
+def test_tool_block_escapes_markup_in_params_and_output() -> None:
+    block = ToolCallBlock("bash", {"command": "echo [/not-a-tag]"})
+    block.set_result("stdout [/not-a-tag]", 5)
+
+    captured: list[str] = []
+
+    class _FakeDetail:
+        def update(self, content: str) -> None:
+            captured.append(content)
+
+    block.query_one = lambda *a, **kw: _FakeDetail()  # type: ignore[method-assign]
+    block.add_class = lambda *a, **kw: None  # type: ignore[method-assign]
+
+    block.on_click()
+
+    Text.from_markup(block._summary())
+    assert captured
+    Text.from_markup(captured[0])
 
 
 # 功能：验证提交用户输入时会追加 user turn，并进入 busy 状态

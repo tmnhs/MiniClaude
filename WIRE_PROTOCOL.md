@@ -581,6 +581,177 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 }
 ```
 
+### PermissionRespondCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `tool_use_id` | `string` | yes |
+| `decision` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "permission.respond",
+      "default": "permission.respond",
+      "title": "Type",
+      "type": "string"
+    },
+    "tool_use_id": {
+      "title": "Tool Use Id",
+      "type": "string"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tool_use_id",
+    "decision"
+  ],
+  "title": "PermissionRespondCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-6",
+  "method": "permission.respond",
+  "params": {
+    "tool_use_id": "toolu_01",
+    "decision": "allow_once"
+  }
+}
+```
+
+### PermissionRespondResult
+
+| Field | Type | Required |
+|---|---|---|
+| `ok` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "ok": {
+      "default": true,
+      "title": "Ok",
+      "type": "boolean"
+    }
+  },
+  "title": "PermissionRespondResult",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-6",
+  "result": {
+    "ok": true
+  }
+}
+```
+
+### SessionCompactCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `focus` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.compact",
+      "default": "session.compact",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "focus": {
+      "default": "",
+      "title": "Focus",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionCompactCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-7",
+  "method": "session.compact",
+  "params": {
+    "session_id": "sess-abc123def456",
+    "focus": ""
+  }
+}
+```
+
+### SessionCompactResult
+
+| Field | Type | Required |
+|---|---|---|
+| `summary_tokens` | `integer` | yes |
+| `saved_tokens` | `integer` | yes |
+
+```json
+{
+  "properties": {
+    "summary_tokens": {
+      "title": "Summary Tokens",
+      "type": "integer"
+    },
+    "saved_tokens": {
+      "title": "Saved Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "summary_tokens",
+    "saved_tokens"
+  ],
+  "title": "SessionCompactResult",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-7",
+  "result": {
+    "summary_tokens": 1200,
+    "saved_tokens": 18000
+  }
+}
+```
+
 ## Server Push
 
 Events pushed from daemon to subscribed clients over the same TCP connection.
@@ -1250,6 +1421,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `output_tokens` | `integer` | yes |
 | `cache_read_input_tokens` | `integer` | yes |
 | `cache_creation_input_tokens` | `integer` | yes |
+| `context_pct` | `number` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1280,6 +1452,11 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "cache_creation_input_tokens": {
       "title": "Cache Creation Input Tokens",
       "type": "integer"
+    },
+    "context_pct": {
+      "default": 0.0,
+      "title": "Context Pct",
+      "type": "number"
     },
     "ts": {
       "title": "Ts",
@@ -1623,6 +1800,277 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 {
   "type": "session.closed",
   "session_id": "sess-abc123def456",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+## Permission Events
+
+### PermissionRequestedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `tool_use_id` | `string` | yes |
+| `tool_name` | `string` | yes |
+| `params` | `object` | yes |
+| `param_preview` | `string` | yes |
+| `session_id` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "permission.requested",
+      "default": "permission.requested",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "tool_use_id": {
+      "title": "Tool Use Id",
+      "type": "string"
+    },
+    "tool_name": {
+      "title": "Tool Name",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": true,
+      "title": "Params",
+      "type": "object"
+    },
+    "param_preview": {
+      "title": "Param Preview",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "tool_use_id",
+    "tool_name",
+    "params",
+    "param_preview",
+    "session_id",
+    "ts"
+  ],
+  "title": "PermissionRequestedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "permission.requested",
+  "run_id": "20260516-100000-abc123",
+  "tool_use_id": "toolu_01",
+  "tool_name": "bash",
+  "params": {
+    "command": "ls"
+  },
+  "param_preview": "command='ls'",
+  "session_id": "sess-abc123def456",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### PermissionGrantedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `tool_use_id` | `string` | yes |
+| `decision` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "permission.granted",
+      "default": "permission.granted",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "tool_use_id": {
+      "title": "Tool Use Id",
+      "type": "string"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "tool_use_id",
+    "decision",
+    "ts"
+  ],
+  "title": "PermissionGrantedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "permission.granted",
+  "run_id": "20260516-100000-abc123",
+  "tool_use_id": "toolu_01",
+  "decision": "allow_once",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### PermissionDeniedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `tool_use_id` | `string` | yes |
+| `decision` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "permission.denied",
+      "default": "permission.denied",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "tool_use_id": {
+      "title": "Tool Use Id",
+      "type": "string"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "tool_use_id",
+    "decision",
+    "ts"
+  ],
+  "title": "PermissionDeniedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "permission.denied",
+  "run_id": "20260516-100000-abc123",
+  "tool_use_id": "toolu_01",
+  "decision": "deny_once",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+## Context Events
+
+### ContextCompactedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `run_id` | `string` | yes |
+| `original_tokens` | `integer` | yes |
+| `summary_tokens` | `integer` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "context.compacted",
+      "default": "context.compacted",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "original_tokens": {
+      "title": "Original Tokens",
+      "type": "integer"
+    },
+    "summary_tokens": {
+      "title": "Summary Tokens",
+      "type": "integer"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "run_id",
+    "original_tokens",
+    "summary_tokens",
+    "ts"
+  ],
+  "title": "ContextCompactedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "context.compacted",
+  "session_id": "sess-abc123def456",
+  "run_id": "20260516-100000-abc123",
+  "original_tokens": 19200,
+  "summary_tokens": 1200,
   "ts": "2026-05-16T10:00:00.001Z"
 }
 ```
