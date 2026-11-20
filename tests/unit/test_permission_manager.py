@@ -4,7 +4,9 @@ import asyncio
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from mini_claude.core.bus.commands import PermissionRespondCommand
 from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.permissions.policy import PermissionDecision, ToolPolicy
 from mini_claude.core.permissions.store import load_policy_file
@@ -66,7 +68,7 @@ async def test_check_and_wait_ask_emits_event_and_waits() -> None:
 
     async def _auto_respond() -> None:
         await asyncio.sleep(0)  # yield once so check_and_wait can emit the event
-        mgr.respond("t2", "allow_once")
+        mgr.respond("t2", "allow_once", session_id="s1")
 
     task = asyncio.create_task(_auto_respond())
     allowed, decision = await mgr.check_and_wait(
@@ -92,7 +94,7 @@ async def test_check_and_wait_deny_once_returns_false() -> None:
 
     async def _auto_deny() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t3", "deny_once")
+        mgr.respond("t3", "deny_once", session_id="s1")
 
     task = asyncio.create_task(_auto_deny())
     allowed, decision = await mgr.check_and_wait(
@@ -117,7 +119,7 @@ async def test_always_allow_skips_future_ask() -> None:
     # First call: user says "always allow"
     async def _auto_always() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t4", "always_allow")
+        mgr.respond("t4", "always_allow", session_id="s1")
 
     task = asyncio.create_task(_auto_always())
     r1, _ = await mgr.check_and_wait(
@@ -150,7 +152,7 @@ async def test_always_allow_not_shared_across_sessions() -> None:
     # session s1 sets always allow for bash
     async def _auto_always() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t6", "always_allow")
+        mgr.respond("t6", "always_allow", session_id="s1")
 
     task = asyncio.create_task(_auto_always())
     await mgr.check_and_wait(
@@ -182,7 +184,7 @@ async def test_always_deny_skips_future_ask() -> None:
 
     async def _auto_always_deny() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t8", "always_deny")
+        mgr.respond("t8", "always_deny", session_id="s1")
 
     task = asyncio.create_task(_auto_always_deny())
     r1, _ = await mgr.check_and_wait(
@@ -268,7 +270,7 @@ async def test_cancel_session_only_affects_target_session() -> None:
     await s2_done.wait()
 
     # s1 should still be pending; resolve it manually
-    mgr.respond("ta", "allow_once")
+    mgr.respond("ta", "allow_once", session_id="s1")
     await s1_done.wait()
 
     await t1
@@ -284,7 +286,7 @@ async def test_cancel_session_only_affects_target_session() -> None:
 # 设计：竞态场景（客户端重复发送响应）不应导致 daemon crash
 def test_respond_unknown_tool_use_id_is_noop() -> None:
     mgr = _make_manager()
-    mgr.respond("nonexistent", "allow_once")  # should not raise
+    mgr.respond("nonexistent", "allow_once", session_id="s1")  # should not raise
 
 
 # ── OUTSIDE_CWD 不被 always 缓存绕过 ─────────────────────────────────────────
@@ -299,7 +301,7 @@ async def test_always_allow_does_not_bypass_outside_cwd() -> None:
     # 首次 allow → 写入 session always 缓存
     async def _auto_always() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t_always", "always_allow")
+        mgr.respond("t_always", "always_allow", session_id="s1")
 
     t = asyncio.create_task(_auto_always())
     await mgr.check_and_wait(
@@ -313,7 +315,7 @@ async def test_always_allow_does_not_bypass_outside_cwd() -> None:
     # 第二次：bash + 绝对路径 → OUTSIDE_CWD 强制 ASK，不命中 session always 缓存
     async def _auto_respond_abs() -> None:
         await asyncio.sleep(0)
-        mgr.respond("t_abs", "allow_once")
+        mgr.respond("t_abs", "allow_once", session_id="s1")
 
     t2 = asyncio.create_task(_auto_respond_abs())
     allowed, decision = await mgr.check_and_wait(
@@ -339,7 +341,7 @@ async def test_persistent_always_written_and_reloaded(tmp_path: pytest.TempPathF
 
     async def _auto_always() -> None:
         await asyncio.sleep(0)
-        mgr.respond("tp1", "always_allow")
+        mgr.respond("tp1", "always_allow", session_id="s1")
 
     t = asyncio.create_task(_auto_always())
     allowed, _ = await mgr.check_and_wait(
@@ -400,5 +402,57 @@ async def test_permission_timeout_cleans_up_pending() -> None:
         event_emitter=emitter,
     )
     # 超时后迟到的 respond 不应 crash
-    mgr.respond("t_late", "allow_once")  # should be noop
+    mgr.respond("t_late", "allow_once", session_id="s1")  # should be noop
     assert "t_late" not in mgr._pending
+
+
+# ── respond: session 归属校验 ────────────────────────────────────────────────
+
+# 功能：验证错误 session 的 respond 被拒绝且不 resolve Future，随后正确 session 可审批
+# 设计：check_and_wait 挂起后先用 s2 越权 respond，断言返回 False 且 Future 仍挂起；
+#       再用 s1 正常审批，确认请求仍可完成——防止其他客户端串会话审批
+async def test_respond_rejects_wrong_session_then_allows_correct() -> None:
+    mgr = _make_manager()
+    _, emitter = await _collect_emitted()
+
+    async def _later() -> None:
+        await asyncio.sleep(0.01)
+        # 越权：s2 审批 s1 的请求 → False，不 resolve
+        assert mgr.respond("tow1", "allow_once", session_id="s2") is False
+        assert "tow1" in mgr._pending
+        # 正确 session → True
+        assert mgr.respond("tow1", "allow_once", session_id="s1") is True
+
+    task = asyncio.create_task(_later())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="tow1", tool_name="bash",
+        params={"command": "echo hi"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    assert allowed is True
+    assert decision == "allow_once"
+
+
+# 功能：验证不传 session_id 的 respond 直接报错，不再向后兼容
+# 设计：省略 session_id 触发 TypeError；显式传 None 触发 ValueError，
+#       确保旧式越权审批无法静默生效
+def test_respond_without_session_id_raises() -> None:
+    mgr = _make_manager()
+
+    with pytest.raises(TypeError):
+        mgr.respond("tcompat", "allow_once")  # type: ignore[call-arg]
+
+    with pytest.raises(ValueError):
+        mgr.respond("tcompat", "allow_once", session_id=None)
+
+
+# 功能：验证 permission.respond 命令缺少 session_id 时在协议层校验失败
+# 设计：直接构造 PermissionRespondCommand，断言 Pydantic 抛 ValidationError，
+#       阻止旧客户端把不带会话归属的审批发到 daemon
+def test_permission_respond_command_requires_session_id() -> None:
+    with pytest.raises(ValidationError):
+        PermissionRespondCommand.model_validate(
+            {"type": "permission.respond", "tool_use_id": "t1", "decision": "allow_once"}
+        )

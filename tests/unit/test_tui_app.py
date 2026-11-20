@@ -269,3 +269,136 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
     assert area.text == ""
     assert "agent is working" in area.border_title.lower()
     assert widgets[0].content == "[bold]>[/bold] hello"
+
+
+# 功能：验证来自其他 session 的事件被防御性丢弃
+# 设计：设置 app._session_id=sess-A，发送 session_id=sess-B 的 run.started，断言无 widget 追加
+def test_event_from_other_session_is_dropped() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    widgets = _collect(app)
+    app._session_id = "sess-A"
+
+    app._handle_event(
+        {
+            "type": "run.started",
+            "run_id": "r",
+            "goal": "g",
+            "session_id": "sess-B",
+            "ts": "t",
+        }
+    )
+
+    assert widgets == []
+
+
+# 功能：验证匹配当前 session 的事件正常处理
+# 设计：session_id 与 app._session_id 一致，断言 run.started 被渲染
+def test_event_from_same_session_is_handled() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    widgets = _collect(app)
+    app._session_id = "sess-A"
+
+    app._handle_event(
+        {
+            "type": "run.started",
+            "run_id": "r",
+            "goal": "g",
+            "session_id": "sess-A",
+            "ts": "t",
+        }
+    )
+
+    assert len(widgets) == 1
+
+
+# 功能：验证缺少 session_id 的旧事件被放行（向后兼容）
+# 设计：不设置 session_id 字段，app._session_id=sess-A，断言事件仍被渲染
+def test_event_without_session_id_is_handled() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    widgets = _collect(app)
+    app._session_id = "sess-A"
+
+    app._handle_event(
+        {"type": "run.started", "run_id": "r", "goal": "g", "ts": "t"}
+    )
+
+    assert len(widgets) == 1
+
+
+# 功能：验证 replay 模式下不丢弃其他 session 的历史事件
+# 设计：构造 replay_run_id 的 app，发送不匹配 session_id 的事件，断言仍被渲染
+def test_replay_mode_allows_other_session_events() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999, replay_run_id="run-old")
+    widgets = _collect(app)
+    app._session_id = "sess-A"
+
+    app._handle_event(
+        {
+            "type": "run.started",
+            "run_id": "run-old",
+            "goal": "g",
+            "session_id": "sess-B",
+            "ts": "t",
+        }
+    )
+
+    assert len(widgets) == 1
+
+
+# 功能：验证审批决策发送的 permission.respond 带当前 session_id
+# 设计：fake client 捕获命令参数，断言 tool_use_id/decision/session_id 三者正确
+async def test_permission_decided_sends_session_id() -> None:
+    class _FakeWidget:
+        def remove(self) -> None:
+            pass
+
+    class _Msg:
+        tool_use_id = "uid-1"
+        decision = "allow_once"
+        widget = _FakeWidget()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def send_command(self, method: str, params: dict) -> dict:
+            self.calls.append((method, params))
+            return {}
+
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._session_id = "sess-A"
+    client = _FakeClient()
+    app._client = client  # type: ignore[assignment]
+    # 保留一个 pending，避免处理函数尝试操作未挂载的输入框
+    app._pending_permission_blocks["other"] = object()  # type: ignore[assignment]
+
+    await app.on_permission_select_decided(_Msg())  # type: ignore[arg-type]
+
+    assert client.calls == [
+        (
+            "permission.respond",
+            {"tool_use_id": "uid-1", "decision": "allow_once", "session_id": "sess-A"},
+        )
+    ]
+
+
+# 功能：验证 _reset_session_state 清空所有会话瞬态状态
+# 设计：手动置脏各状态字段后调用 reset，逐个断言已恢复初始值
+def test_reset_session_state_clears_transient_fields() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._busy = True
+    app._pending_tool_blocks["t"] = object()  # type: ignore[assignment]
+    app._pending_permission_blocks["p"] = object()  # type: ignore[assignment]
+    app._last_context_pct = 55.0
+    app._subagent_run_ids["r"] = "desc"
+    app._subagent_start_times["r"] = 1.0
+
+    app._reset_session_state()
+
+    assert app._busy is False
+    assert app._pending_tool_blocks == {}
+    assert app._pending_permission_blocks == {}
+    assert app._last_context_pct == 0.0
+    assert app._subagent_run_ids == {}
+    assert app._subagent_start_times == {}
+    assert app._current_llm is None

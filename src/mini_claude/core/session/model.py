@@ -6,6 +6,9 @@ from typing import Any, Literal
 SessionStatus = Literal["active", "waiting_for_input", "closed"]
 SessionMode = Literal["one_shot", "chat"]
 
+# session_id 会被拼进 ~/.mc/sessions/<id>，限制字符集防止路径穿越
+SESSION_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
 
 @dataclass
 class Session:

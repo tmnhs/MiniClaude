@@ -140,15 +140,35 @@ class PermissionManager:
         allowed = self._apply_response(raw, session_id, tool_name)
         return allowed, raw
 
-    # 处理客户端返回的审批决策，resolve 对应 Future
-    def respond(self, tool_use_id: str, decision: str) -> None:
-        req = self._pending.pop(tool_use_id, None)
+    # 处理客户端返回的审批决策，校验会话归属后 resolve 对应 Future
+    # session_id 必填；缺失直接报错，会话不匹配返回 False（未处理）
+    def respond(
+        self,
+        tool_use_id: str,
+        decision: str,
+        session_id: str | None,
+    ) -> bool:
+        if session_id is None:
+            raise ValueError("permission.respond requires session_id")
+
+        req = self._pending.get(tool_use_id)
         if req is None:
             logger.warning("permission.respond: unknown tool_use_id=%s", tool_use_id)
-            return
+            return False
 
+        if req.session_id != session_id:
+            logger.warning(
+                "permission.respond: session mismatch tool_use_id=%s expected=%s got=%s",
+                tool_use_id,
+                req.session_id,
+                session_id,
+            )
+            return False
+
+        self._pending.pop(tool_use_id, None)
         if not req.future.done():
             req.future.set_result(decision)
+        return True
 
     # 应用审批决策，更新 session + persistent 缓存，返回是否放行
     def _apply_response(self, decision: str, session_id: str, tool_name: str) -> bool:

@@ -89,6 +89,8 @@ async def _run_async(goal: str, config: MiniClaudeConfig) -> int:
     loop_task = asyncio.create_task(client.run_event_loop())
 
     try:
+        # 一次性命令，agent.run 之后才知道 run_id，故保持 global 订阅
+        # 已知限制：多个 mc run 同时执行时会互相看到对方事件
         await client.send_command(
             "event.subscribe",
             {

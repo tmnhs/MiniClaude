@@ -148,6 +148,7 @@ class SpawnAgentTool(BaseTool):
                 run_id=child_run_id,
                 parent_run_id=self._parent_run_id,
                 description=p.description,
+                session_id=self._session_id or None,
                 ts=now_iso(),
             )
         )
@@ -179,6 +180,7 @@ class SpawnAgentTool(BaseTool):
                 run_id=child_run_id,
                 parent_run_id=self._parent_run_id,
                 status=child_ctx.status,
+                session_id=self._session_id or None,
                 ts=now_iso(),
             )
         )
@@ -214,6 +216,7 @@ class SpawnAgentTool(BaseTool):
                 run_id=run_id,
                 parent_run_id=self._parent_run_id,
                 status=ctx.status,
+                session_id=self._session_id or None,
                 ts=now_iso(),
             )
         )

@@ -55,9 +55,16 @@ class AnthropicProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse:
         await bus.publish(
-            LlmModelSelectedEvent(run_id=run_id, model=self._model, strategy="static", ts=now_iso())
+            LlmModelSelectedEvent(
+                run_id=run_id,
+                model=self._model,
+                strategy="static",
+                session_id=session_id,
+                ts=now_iso(),
+            )
         )
 
         # 系统提示词（调用方未提供时回退到内置提示）
@@ -97,7 +104,11 @@ class AnthropicProvider:
                 async with self._client.messages.stream(**kwargs) as stream:
                     async for text in stream.text_stream:
                         if attempt == 1:
-                            await bus.publish(LlmTokenEvent(run_id=run_id, token=text, ts=now_iso()))
+                            await bus.publish(
+                                LlmTokenEvent(
+                                    run_id=run_id, token=text, session_id=session_id, ts=now_iso()
+                                )
+                            )
                         
                         text_parts.append(text)
                     final_message = await stream.get_final_message()
@@ -133,6 +144,7 @@ class AnthropicProvider:
                 cache_read_input_tokens=cache_read,
                 cache_creation_input_tokens=cache_create,
                 context_pct=context_pct,
+                session_id=session_id,
                 ts=now_iso(),
             )
         )

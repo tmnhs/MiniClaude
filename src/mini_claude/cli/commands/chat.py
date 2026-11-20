@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import uuid
 from typing import Any
 
 from mini_claude.core.conf.config import MiniClaudeConfig
@@ -92,16 +93,20 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
     client.on_event(printer.handle)
     loop_task = asyncio.create_task(client.run_event_loop())
 
+    # 预生成 id，先订阅再创建：create 期间的事件不会因订阅未就绪而丢失
+    session_id = f"sess-{uuid.uuid4().hex[:12]}"
+    exit_code = 0
     try:
         await client.send_command(
             "event.subscribe",
             {
                 "topics": ["session.*", "run.*", "tool.*", "llm.token", "permission.*"],
-                "scope": "global",
+                "scope": f"session:{session_id}",
             },
         )
-        created = await client.send_command("session.create", {"mode": "chat"})
-        session_id = str(created["session_id"])
+        await client.send_command(
+            "session.create", {"mode": "chat", "session_id": session_id}
+        )
         print(f"[session: {session_id}]")
 
         while True:
@@ -125,7 +130,11 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
                 printer.pending_permission_id = None
                 await client.send_command(
                     "permission.respond",
-                    {"tool_use_id": tool_use_id, "decision": decision},
+                    {
+                        "tool_use_id": tool_use_id,
+                        "decision": decision,
+                        "session_id": session_id,
+                    },
                 )
                 continue
 
@@ -137,7 +146,14 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
         await client.send_command("session.close", {"session_id": session_id})
     except IpcError as e:
         print(f"error: {e}", file=sys.stderr)
-        return 1
+        exit_code = 1
+    except asyncio.CancelledError:
+        # pending RPC future 被取消 = 连接断开；真正的任务取消继续向上传播
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+        print("error: connection closed", file=sys.stderr)
+        exit_code = 1
     finally:
         loop_task.cancel()
         try:
@@ -146,7 +162,7 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
             pass
         await client.close()
 
-    return 0
+    return exit_code
 
 
 # 执行 mc chat 命令

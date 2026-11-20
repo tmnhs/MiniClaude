@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from mini_claude.core.bus.commands import PingCommand, PongResult
+from mini_claude.core.bus.commands import (
+    PingCommand,
+    PongResult,
+    SessionCreateCommand,
+)
 from mini_claude.core.bus.events import CoreStartedEvent
 
 
@@ -46,3 +50,19 @@ def test_core_started_event_roundtrip() -> None:
     evt2 = CoreStartedEvent.model_validate_json(evt.model_dump_json())
     assert evt2.listen_addr == "127.0.0.1:10721"
     assert evt2.type == "core.started"
+
+
+# 功能：验证 session.create 接受客户端预生成的合法 session_id，缺省时保持 None
+# 设计：合法 id 正常解析；不传时默认 None，服务端据此自行生成
+def test_session_create_command_accepts_optional_session_id() -> None:
+    cmd = SessionCreateCommand(session_id="sess-abc123")
+    assert cmd.session_id == "sess-abc123"
+    assert SessionCreateCommand().session_id is None
+
+
+# 功能：验证 session.create 拒绝含路径分隔符或非法字符的 session_id
+# 设计：id 会拼进 ~/.mc/sessions/<id> 目录路径，必须阻止 "../" 等路径穿越输入
+def test_session_create_command_rejects_invalid_session_id() -> None:
+    for bad in ["../../etc", "a/b", "", "x" * 65, "sess id"]:
+        with pytest.raises(ValidationError):
+            SessionCreateCommand(session_id=bad)

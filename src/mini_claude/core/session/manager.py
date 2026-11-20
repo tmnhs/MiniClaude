@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from mini_claude.core.bus.envelope import HandlerError
 from mini_claude.core.bus.events import SessionClosedEvent, SessionCreatedEvent, SessionMessageReceivedEvent, SessionResumedEvent, SessionWaitingForInputEvent, SkillInvokedEvent
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.base import LLMProvider
-from mini_claude.core.session.model import Session, SessionMode
+from mini_claude.core.session.model import SESSION_ID_PATTERN, Session, SessionMode
 from mini_claude.core.session.store import SessionStore
 from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.utils.runs_dir import new_run_id
@@ -22,6 +23,8 @@ if TYPE_CHECKING:
 SESSION_NOT_FOUND = -32010
 SESSION_CLOSED = -32011
 SESSION_BUSY = -32012
+SESSION_ID_CONFLICT = -32013
+SESSION_ID_INVALID = -32014
 
 class SessionManager:
     # 初始化会话管理器，接入文件存储、runner 工厂和事件总线
@@ -40,9 +43,19 @@ class SessionManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._skill_loader = SkillLoader()
 
-    # 创建新 session 并写入 meta.json
-    async def create(self, mode: SessionMode, title: str = "") -> Session:
-        sid = f"sess-{uuid.uuid4().hex[:12]}"
+    # 创建新 session 并写入 meta.json；session_id 可由客户端预生成（用于先订阅再创建）
+    async def create(
+        self,
+        mode: SessionMode,
+        title: str = "",
+        session_id: str | None = None,
+    ) -> Session:
+        if session_id is not None and not re.fullmatch(SESSION_ID_PATTERN, session_id):
+            raise HandlerError(SESSION_ID_INVALID, "invalid session id format")
+
+        sid = session_id or f"sess-{uuid.uuid4().hex[:12]}"
+        if sid in self._sessions:
+            raise HandlerError(SESSION_ID_CONFLICT, f"session id already exists: {sid}")
         ts = now_iso()
         session = Session(
             id=sid,
@@ -108,6 +121,7 @@ class SessionManager:
                             skill_name=skill_name,
                             arguments=arguments,
                             run_id=run_id,
+                            session_id=sid,
                             ts=now_iso(),
                         )
                     )
