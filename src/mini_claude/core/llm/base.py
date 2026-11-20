@@ -16,4 +16,5 @@ class LLMProvider(Protocol):
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse: ...

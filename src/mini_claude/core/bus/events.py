@@ -14,6 +14,7 @@ class RunStartedEvent(BaseModel):
     type: Literal["run.started"] = "run.started"
     run_id: str
     goal: str
+    session_id: str | None = None
     ts: str  # ISO 8601 时间戳，例如 "2026-10-01T12:34:56.789Z"
 
 class RunFinishedEvent(BaseModel):
@@ -22,18 +23,21 @@ class RunFinishedEvent(BaseModel):
     status: str  # "success" | "failed"
     reason: str | None = None  # "exceeded_max_steps" | "cancelled" | "llm_error" | ...
     steps: int
+    session_id: str | None = None
     ts: str
 
 class StepStartedEvent(BaseModel):
     type: Literal["step.started"] = "step.started"
     run_id: str
     step: int
+    session_id: str | None = None
     ts: str
 
 class StepFinishedEvent(BaseModel):
     type: Literal["step.finished"] = "step.finished"
     run_id: str
     step: int
+    session_id: str | None = None
     ts: str
 
 
@@ -43,6 +47,7 @@ class ToolCallStartedEvent(BaseModel):
     tool_use_id: str
     tool_name: str
     params: dict[str, Any]  # 工具调用参数
+    session_id: str | None = None
     ts: str
 
 
@@ -53,6 +58,7 @@ class ToolCallFinishedEvent(BaseModel):
     tool_name: str
     elapsed_ms: int
     output: str = ""  # 工具结果内容，用于 TUI 展示
+    session_id: str | None = None
     ts: str
 
 
@@ -66,12 +72,14 @@ class ToolCallFailedEvent(BaseModel):
     error_message: str
     attempt: int = 1  # 1=first attempt, 2=first retry, 3=second retry
     elapsed_ms: int
+    session_id: str | None = None
     ts: str
 
 class LlmTokenEvent(BaseModel):
     type: Literal["llm.token"] = "llm.token"
     run_id: str
     token: str
+    session_id: str | None = None
     ts: str
 
 
@@ -83,6 +91,7 @@ class LlmUsageEvent(BaseModel):
     cache_read_input_tokens: int
     cache_creation_input_tokens: int
     context_pct: float = 0.0
+    session_id: str | None = None
     ts: str
 
 
@@ -91,6 +100,7 @@ class LlmModelSelectedEvent(BaseModel):
     run_id: str
     model: str
     strategy: str  # "static" | "rule_based" | "cost_budget"
+    session_id: str | None = None
     ts: str
 
 
@@ -100,6 +110,7 @@ class LogLineEvent(BaseModel):
     level: str  # "DEBUG" | "INFO" | "WARNING" | "ERROR"
     source: str
     message: str
+    session_id: str | None = None
     ts: str
 
 class SessionCreatedEvent(BaseModel):
@@ -150,6 +161,7 @@ class PermissionGrantedEvent(BaseModel):
     tool_use_id: str
     # "allow_once" | "always_allow" | "auto_allow"
     decision: str
+    session_id: str | None = None
     ts: str
 
 class PermissionDeniedEvent(BaseModel):
@@ -158,6 +170,7 @@ class PermissionDeniedEvent(BaseModel):
     tool_use_id: str
     # "deny_once" | "always_deny" | "auto_deny"
     decision: str
+    session_id: str | None = None
     ts: str
 
 class ContextCompactedEvent(BaseModel):
@@ -173,6 +186,7 @@ class SubagentStartedEvent(BaseModel):
     run_id: str          # 子 agent run_id
     parent_run_id: str
     description: str
+    session_id: str | None = None
     ts: str
 
 class SubagentFinishedEvent(BaseModel):
@@ -180,6 +194,7 @@ class SubagentFinishedEvent(BaseModel):
     run_id: str
     parent_run_id: str
     status: str          # "success" | "failed"
+    session_id: str | None = None
     ts: str
 
 class SkillInvokedEvent(BaseModel):
@@ -187,6 +202,7 @@ class SkillInvokedEvent(BaseModel):
     skill_name: str
     arguments: str
     run_id: str
+    session_id: str | None = None
     ts: str
 
 # 根据 type 字段决定事件类型的判别联合

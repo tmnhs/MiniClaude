@@ -34,6 +34,7 @@ class TracingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse:
         call_data: dict[str, Any]
         if self._include_payload:
@@ -59,7 +60,8 @@ class TracingProvider:
 
         t0 = time.monotonic()
         result = await self._inner.chat(
-            messages, tool_schemas, bus, run_id, step=step, system=system
+            messages, tool_schemas, bus, run_id,
+            step=step, system=system, session_id=session_id,
         )
         latency_ms = int((time.monotonic() - t0) * 1000)
 

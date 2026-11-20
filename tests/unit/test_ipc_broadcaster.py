@@ -5,7 +5,12 @@ import json
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from mini_claude.core.bus.events import RunStartedEvent, StepStartedEvent
+from mini_claude.core.bus.events import (
+    LlmTokenEvent,
+    RunStartedEvent,
+    SessionWaitingForInputEvent,
+    StepStartedEvent,
+)
 from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 
 
@@ -120,4 +125,70 @@ async def test_dead_connection_removed_after_failure() -> None:
 
     writer.write.reset_mock()  # type: ignore[attr-defined]
     await broadcaster.handle(event)  # 已无订阅者剩余
+    writer.write.assert_not_called()  # type: ignore[attr-defined]
+
+
+# 功能：验证 scope="session:<id>" 只接收 session_id 匹配的事件
+# 设计：订阅 session:A，发布带 session A / B 的事件，断言只写入一次，确认会话级隔离
+async def test_scope_session_specific_filters_other_sessions() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    broadcaster.subscribe(writer, topics=["llm.token"], scope="session:A")
+
+    await broadcaster.handle(
+        LlmTokenEvent(run_id="r1", token="a", session_id="A", ts="2026-01-01T00:00:00Z")
+    )
+    await broadcaster.handle(
+        LlmTokenEvent(run_id="r2", token="b", session_id="B", ts="2026-01-01T00:00:00Z")
+    )
+
+    assert writer.write.call_count == 1  # type: ignore[attr-defined]
+    data = json.loads(writer.write.call_args[0][0].rstrip(b"\n"))  # type: ignore[attr-defined]
+    assert data["event"]["token"] == "a"
+
+
+# 功能：验证 session scope 下没有 session_id 的事件被丢弃（旧事件不串屏）
+# 设计：发布不带 session_id 的 run.started，订阅 session:A，断言不写入
+async def test_scope_session_drops_event_without_session_id() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    broadcaster.subscribe(writer, topics=["run.*"], scope="session:A")
+
+    await broadcaster.handle(_run_started("r1"))
+
+    writer.write.assert_not_called()  # type: ignore[attr-defined]
+
+
+# 功能：验证 session 事件（session.waiting_for_input）按 session_id 匹配
+# 设计：该类事件只有 session_id 没有 run_id，确认 scope 对 session 事件同样生效
+async def test_scope_session_matches_session_events() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    broadcaster.subscribe(writer, topics=["session.*"], scope="session:A")
+
+    await broadcaster.handle(
+        SessionWaitingForInputEvent(
+            session_id="A", last_run_id="r1", ts="2026-01-01T00:00:00Z"
+        )
+    )
+    await broadcaster.handle(
+        SessionWaitingForInputEvent(
+            session_id="B", last_run_id="r2", ts="2026-01-01T00:00:00Z"
+        )
+    )
+
+    assert writer.write.call_count == 1  # type: ignore[attr-defined]
+    data = json.loads(writer.write.call_args[0][0].rstrip(b"\n"))  # type: ignore[attr-defined]
+    assert data["event"]["session_id"] == "A"
+
+
+# 功能：验证未知 scope 不投递任何事件
+# 设计：订阅 scope="bogus:x"，断言 handle 后没有写入，避免非法 scope 意外全通
+async def test_unknown_scope_delivers_nothing() -> None:
+    broadcaster = IpcEventBroadcaster()
+    writer = _make_writer()
+    broadcaster.subscribe(writer, topics=["run.*"], scope="bogus:x")
+
+    await broadcaster.handle(_run_started("r1"))
+
     writer.write.assert_not_called()  # type: ignore[attr-defined]

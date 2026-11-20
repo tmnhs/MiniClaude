@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator
+from pydantic import BaseModel, Discriminator, Field
 
-from mini_claude.core.session.model import SessionMode, SessionStatus
+from mini_claude.core.session.model import (
+    SESSION_ID_PATTERN,
+    SessionMode,
+    SessionStatus,
+)
 
 class PingCommand(BaseModel):
     type: Literal["core.ping"] = "core.ping"
@@ -25,19 +29,8 @@ class AgentRunResult(BaseModel):
 class EventSubscribeCommand(BaseModel):
     type: Literal["event.subscribe"] = "event.subscribe"
     topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
-    scope: str = "global"      # "global" | "run:<run_id>"
+    scope: str = "global"      # "global" | "run:<run_id>" | "session:<session_id>"
     replay_from_run: str | None = None  # 设置则先从 events.jsonl 回放历史再接实时流
-
-class EventSubscribeResult(BaseModel):
-    subscription_id: str
-    replayed_count: int = 0
-
-class EventSubscribeCommand(BaseModel):
-    type: Literal["event.subscribe"] = "event.subscribe"
-    topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
-    scope: str = "global"      # "global" | "run:<run_id>"
-    replay_from_run: str | None = None  # 设置则先从 events.jsonl 回放历史再接实时流
-
 
 class EventSubscribeResult(BaseModel):
     subscription_id: str
@@ -48,6 +41,8 @@ class SessionCreateCommand(BaseModel):
     type: Literal["session.create"] = "session.create"
     mode: SessionMode = "chat"
     title: str = ""
+    # 客户端可预生成 id 并在 create 前先订阅，服务端未提供时自行生成；
+    session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
 
 
 class SessionCreateResult(BaseModel):
@@ -87,6 +82,8 @@ class PermissionRespondCommand(BaseModel):
     tool_use_id: str
     # "allow_once" | "always_allow" | "deny_once" | "always_deny"
     decision: str
+    # 必填：审批必须声明归属会话，缺失或与会话不匹配一律拒绝，防止跨会话越权
+    session_id: str
 
 class PermissionRespondResult(BaseModel):
     ok: bool = True

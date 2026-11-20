@@ -7,7 +7,13 @@ import pytest
 from mini_claude.core.bus.envelope import HandlerError
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.runner import RunOutcome
-from mini_claude.core.session.manager import SESSION_CLOSED, SESSION_NOT_FOUND, SessionManager
+from mini_claude.core.session.manager import (
+    SESSION_CLOSED,
+    SESSION_ID_CONFLICT,
+    SESSION_ID_INVALID,
+    SESSION_NOT_FOUND,
+    SessionManager,
+)
 from mini_claude.core.session.model import Session
 from mini_claude.core.session.store import SessionStore
 
@@ -104,3 +110,38 @@ async def test_closed_session_rejects_message(tmp_path: Path) -> None:
     with pytest.raises(HandlerError) as exc:
         await manager.send_message(session.id, "again")
     assert exc.value.code == SESSION_CLOSED
+
+
+# 功能：验证客户端预生成的 session_id 被直接采用并持久化
+# 设计：create 时传入固定 id，断言返回值和 meta 一致，覆盖"先订阅再创建"的 id 复用路径
+async def test_create_uses_client_provided_session_id(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+
+    session = await manager.create("chat", session_id="sess-client")
+
+    assert session.id == "sess-client"
+    assert store.read_meta("sess-client").id == "sess-client"
+
+
+# 功能：验证重复的预生成 session_id 被拒绝，不会覆盖已有会话
+# 设计：同一 id 创建两次，断言错误码为 SESSION_ID_CONFLICT
+async def test_create_duplicate_session_id_raises(tmp_path: Path) -> None:
+    manager = SessionManager(SessionStore(tmp_path), lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    await manager.create("chat", session_id="sess-dup")
+
+    with pytest.raises(HandlerError) as exc:
+        await manager.create("chat", session_id="sess-dup")
+    assert exc.value.code == SESSION_ID_CONFLICT
+
+
+# 功能：验证 SessionManager 自身拒绝非法 session_id（绕过命令层时的兜底校验）
+# 设计：直接调用 create 传入路径穿越字符串，断言 SESSION_ID_INVALID 且未创建目录
+async def test_create_rejects_invalid_session_id(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+
+    with pytest.raises(HandlerError) as exc:
+        await manager.create("chat", session_id="../../escape")
+    assert exc.value.code == SESSION_ID_INVALID
+    assert not (tmp_path.parent / "escape").exists()

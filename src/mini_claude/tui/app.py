@@ -5,6 +5,7 @@ import logging
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 
 from rich.markup import escape
@@ -288,7 +289,11 @@ class MiniClaudeTuiApp(App[None]):
                 try:
                     await self._client.send_command(
                         "permission.respond",
-                        {"tool_use_id": tool_use_id, "decision": decision},
+                        {
+                            "tool_use_id": tool_use_id,
+                            "decision": decision,
+                            "session_id": self._session_id,
+                        },
                     )
                 except (IpcError, RuntimeError, OSError):
                     pass
@@ -315,6 +320,16 @@ class MiniClaudeTuiApp(App[None]):
             self._plain_history.append(self._current_llm.text)
             self._current_llm.finalize_markdown()
         self._current_llm = None
+
+    # 断连/换会话时清空瞬态状态，避免上一个会话的残留影响下一个
+    def _reset_session_state(self) -> None:
+        self._busy = False
+        self._break_llm()
+        self._pending_tool_blocks.clear()
+        self._pending_permission_blocks.clear()
+        self._last_context_pct = 0.0
+        self._subagent_run_ids.clear()
+        self._subagent_start_times.clear()
 
     # 将选择控件挂载到 Screen 顶层（#prompt 之前），避免 VerticalScroll 争抢焦点
     def _mount_permission_select(self, select: PermissionSelect) -> None:
@@ -372,6 +387,10 @@ class MiniClaudeTuiApp(App[None]):
             client.on_event(on_event)
 
             try:
+                # 客户端预生成 session_id，先订阅再创建：create 期间（含 session.created）
+                # 的事件不会因订阅尚未就绪而丢失；服务端收到 id 时直接使用
+                self._session_id = f"sess-{uuid.uuid4().hex[:12]}"
+
                 params: dict[str, Any] = {
                     "topics": [
                         "session.*",
@@ -386,16 +405,17 @@ class MiniClaudeTuiApp(App[None]):
                         "subagent.*",
                         "skill.*",
                     ],
-                    "scope": "global",
+                    "scope": f"session:{self._session_id}",
                 }
 
                 if self._replay_run_id is not None:
                     params["replay_from_run"] = self._replay_run_id
 
-                # 先订阅，再创建 session，避免在订阅过程中有事件丢失
                 await client.send_command("event.subscribe", params)
-                created = await client.send_command("session.create", {"mode": "chat"})
-                self._session_id = str(created["session_id"])
+                await client.send_command(
+                    "session.create",
+                    {"mode": "chat", "session_id": self._session_id},
+                )
                 logger.info("session created session_id=%s", self._session_id)
 
                 prompt = self._prompt()
@@ -409,6 +429,13 @@ class MiniClaudeTuiApp(App[None]):
                 await loop_task
             except IpcError as e:
                 header.update(f"[bold]MiniClaude[/bold]  [red]subscribe error: {e}[/red]")
+            except asyncio.CancelledError:
+                # pending RPC future 被取消 = 连接在等待响应时断开：按断连处理并继续重连；
+                # 若是 worker 被主动取消（应用退出），继续向上传播
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                logger.debug("connection dropped while awaiting rpc response")
             finally:
                 if not loop_task.done():
                     loop_task.cancel()
@@ -421,7 +448,7 @@ class MiniClaudeTuiApp(App[None]):
                     prompt.read_only = False
                     prompt.border_title = "disconnected, retrying..."
 
-                self._break_llm()
+                self._reset_session_state()
                 await client.close()
 
             self._update_header("disconnected")
@@ -449,6 +476,12 @@ class MiniClaudeTuiApp(App[None]):
 
     # 实际的事件路由逻辑
     def _handle_event_inner(self, event: dict[str, Any]) -> None:
+        # 防御性过滤：服务端已按 session scope 隔离，这里兜底旧 core / 旧日志的事件
+        # 回放模式下放行，允许查看历史会话
+        sid = event.get("session_id")
+        if sid and self._session_id and sid != self._session_id and self._replay_run_id is None:
+            return
+
         t = event.get("type", "")
 
         if t == "llm.token":

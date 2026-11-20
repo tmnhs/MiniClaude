@@ -3,6 +3,7 @@ import fnmatch
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -53,7 +54,7 @@ class IpcEventBroadcaster:
             if not self._matches_topic(event_type, sub.topics):
                 continue
 
-            if not self._matches_scope(run_id, sub.scope):
+            if not self._matches_scope(event_dict, sub.scope):
                 continue
 
             try:
@@ -87,11 +88,13 @@ class IpcEventBroadcaster:
     def _matches_topic(event_type: str, topics: list[str]) -> bool:
         return any(fnmatch.fnmatch(event_type, pattern) for pattern in topics)
 
-    # 检查事件 run_id 是否匹配订阅的 scope（global 全通，run:<id> 精确匹配）
+    # 检查事件是否匹配订阅的 scope（global 全通；run:<id> / session:<id> 精确匹配）
     @staticmethod
-    def _matches_scope(run_id: str | None, scope: str) -> bool:
+    def _matches_scope(event: dict[str, Any], scope: str) -> bool:
         if scope == "global":
             return True
         if scope.startswith("run:"):
-            return run_id == scope[4:]
+            return event.get("run_id") == scope[4:]
+        if scope.startswith("session:"):
+            return event.get("session_id") == scope[8:]
         return False

@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from mini_claude.core.bus.events import LlmTokenEvent
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock
@@ -25,6 +26,7 @@ class _EndTurnProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse:
         return LlmResponse(stop_reason="end_turn", text="done")
 
@@ -44,6 +46,7 @@ class _LoopingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse:
         self._call += 1
         tc = ToolCallBlock(id=f"t{self._call}", name="unknown_tool", input={})
@@ -67,6 +70,7 @@ class _CapturingProvider:
         *,
         step: int = 0,
         system: str | None = None,
+        session_id: str | None = None,
     ) -> LlmResponse:
         self.messages = [dict(m) for m in messages]
         self.system = system
@@ -279,6 +283,7 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
             *,
             step: int = 0,
             system: str | None = None,
+            session_id: str | None = None,
         ) -> LlmResponse:
             self.calls += 1
             if self.calls == 1:
@@ -309,3 +314,82 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
     await runner.run_and_capture("remember", run_id="run-1", session=session, store=store)
 
     assert "Use Python 3.12" in store.read_notes("sess-1")
+
+
+# --- session 事件打标 ---------------------------------------------------------
+
+
+async def _run_with_session(
+    tmp_path: Path, *, provider: object
+) -> list[BaseModel]:
+    from mini_claude.core.session.model import Session
+    from mini_claude.core.session.store import SessionStore
+
+    external_bus = EventBus()
+    collected: list[BaseModel] = []
+
+    async def collect(e: BaseModel) -> None:
+        collected.append(e)
+
+    external_bus.subscribe(collect)
+
+    store = SessionStore(tmp_path / "sessions")
+    session = Session(
+        id="sess-tag",
+        mode="chat",
+        status="active",
+        title="",
+        created_at="t",
+        updated_at="t",
+    )
+    store.append_message("sess-tag", "user", "hi")
+
+    runner = AgentRunner(
+        _config(), bus=external_bus, provider=provider, runs_dir=tmp_path / "runs"
+    )
+    await runner.run_and_capture(
+        "hi", run_id="run-tag", session=session, store=store
+    )
+    return collected
+
+
+# 功能：验证 session run 的 run.* / step.* 事件都带上 session.id
+# 设计：注入外部 bus 收集事件，断言 run.started 与所有 step.* 的 session_id 一致
+async def test_session_run_tags_events_with_session_id(tmp_path: Path) -> None:
+    events = await _run_with_session(tmp_path, provider=_EndTurnProvider())
+
+    started = next(e for e in events if e.type == "run.started")  # type: ignore[attr-defined]
+    assert started.session_id == "sess-tag"  # type: ignore[attr-defined]
+
+    step_events = [e for e in events if e.type.startswith("step.")]  # type: ignore[attr-defined]
+    assert step_events
+    assert all(e.session_id == "sess-tag" for e in step_events)  # type: ignore[attr-defined]
+
+
+class _TokenProvider:
+    # 通过 chat 的 session_id 参数向事件打标，模拟真实 provider 的显式传播
+    async def chat(
+        self,
+        messages: list[dict[str, object]],
+        tool_schemas: list[dict[str, object]],
+        bus: EventBus,
+        run_id: str,
+        *,
+        step: int = 0,
+        system: str | None = None,
+        session_id: str | None = None,
+    ) -> LlmResponse:
+        await bus.publish(
+            LlmTokenEvent(run_id=run_id, token="tok", session_id=session_id, ts="t")
+        )
+        return LlmResponse(stop_reason="end_turn", text="done")
+
+
+# 功能：验证 provider 通过 chat 签名拿到 session_id 并在事件上携带
+# 设计：假 provider 仅依赖传入的 session_id 发布 LlmTokenEvent，断言事件 session_id 与会话一致，
+#       证明会话归属通过显式签名传播而非 wrapper 注入
+async def test_provider_token_event_gets_session_id(tmp_path: Path) -> None:
+    events = await _run_with_session(tmp_path, provider=_TokenProvider())
+
+    token = next(e for e in events if e.type == "llm.token")  # type: ignore[attr-defined]
+    assert token.session_id == "sess-tag"  # type: ignore[attr-defined]

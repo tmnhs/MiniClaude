@@ -96,7 +96,9 @@ class CoreApp():
     async def _session_create_handler(self, params: dict[str, Any]) -> SessionCreateResult:
         assert self._sessions is not None
         cmd = SessionCreateCommand.model_validate(params)
-        session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
+        session = await self._sessions.create(
+            mode=cmd.mode, title=cmd.title, session_id=cmd.session_id
+        )
         return SessionCreateResult(session_id=session.id, status=session.status)
 
     # 向 session 发送一条用户消息并同步等待对应 run 完成
@@ -122,8 +124,10 @@ class CoreApp():
             logger.error("permission.respond: PermissionManager not initialized")
             return PermissionRespondResult()
 
-        self._permission_manager.respond(cmd.tool_use_id, cmd.decision)
-        return PermissionRespondResult()
+        resolved = self._permission_manager.respond(
+            cmd.tool_use_id, cmd.decision, cmd.session_id
+        )
+        return PermissionRespondResult(ok=resolved)
     
     # 关闭 session 并返回 closed 状态
     async def _session_close_handler(self, params: dict[str, Any]) -> SessionCloseResult:
@@ -143,15 +147,17 @@ class CoreApp():
     async def _subscribe_handler(self, params: dict[str, Any]) -> EventSubscribeResult:
         cmd = EventSubscribeCommand.model_validate(params)
         writer = get_connection_writer()
-
-        replayed_count = 0
-        if cmd.replay_from_run is not None:
-            replayed_count = await self._replay_events(
-                cmd.replay_from_run, writer, cmd.topics
-            )
-
         assert self._broadcaster is not None
+
+        # 快照必须在注册订阅前同步读取：读快照与注册订阅之间没有 await，
+        # 因此不会插入新事件——既不会丢失回放窗口内的实时事件，
+        # 也不会重复回放订阅之后才写入文件的事件
+        replay_events: list[dict[str, Any]] = []
+        if cmd.replay_from_run is not None:
+            replay_events = self._load_replay_events(cmd.replay_from_run, cmd.topics)
+
         sub_id = self._broadcaster.subscribe(writer, cmd.topics, cmd.scope)
+        replayed_count = await self._write_replay_events(writer, replay_events)
         return EventSubscribeResult(subscription_id=sub_id, replayed_count=replayed_count)
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
@@ -169,13 +175,8 @@ class CoreApp():
             )
         )
 
-    # 从 events.jsonl 向 writer 回放匹配 topic 的历史事件，返回已回放条数
-    async def _replay_events(
-        self,
-        run_id: str,
-        writer: asyncio.StreamWriter,
-        topics: list[str],
-    ) -> int:
+    # 读取 events.jsonl 中匹配 topic 的历史事件快照（同步，保证与注册订阅之间无 await）
+    def _load_replay_events(self, run_id: str, topics: list[str]) -> list[dict[str, Any]]:
         path = events_file(run_id)
         if not path.exists():
             for candidate in Path("~/.mc/sessions").expanduser().glob(
@@ -184,9 +185,9 @@ class CoreApp():
                 path = candidate
                 break
         if not path.exists():
-            return 0
+            return []
 
-        count = 0
+        events: list[dict[str, Any]] = []
         for line in path.read_text().splitlines():
             if not line:
                 continue
@@ -198,14 +199,21 @@ class CoreApp():
             event_type: str = event.get("type", "")
             if not any(fnmatch.fnmatch(event_type, p) for p in topics):
                 continue
+            events.append(event)
+        return events
 
+    # 将回放快照写入 writer，返回已回放条数
+    async def _write_replay_events(
+        self,
+        writer: asyncio.StreamWriter,
+        events: list[dict[str, Any]],
+    ) -> int:
+        for event in events:
             envelope = EventPushEnvelope(event=event)
             writer.write(envelope.model_dump_json().encode() + b"\n")
-            count += 1
-
-        if count:
+        if events:
             await writer.drain()
-        return count
+        return len(events)
 
 
     # 启动守护进程：加载配置、初始化日志、启动 TCP 服务器，并等待退出信号

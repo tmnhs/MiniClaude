@@ -178,6 +178,8 @@ class AgentRunner:
         run_path.mkdir(parents=True, exist_ok=True)
 
         # 建立事件总线
+        session_id_str = session.id if session is not None else ""
+        session_id = session_id_str or None
         bus = self._bus if self._bus is not None else EventBus()
         for handler in self._extra_handlers:
             bus.subscribe(handler)
@@ -200,7 +202,11 @@ class AgentRunner:
         # 打开事件文件，然后正式开始
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
-            await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=now_iso()))
+            await bus.publish(
+                RunStartedEvent(
+                    run_id=run_id, goal=goal, session_id=session_id, ts=now_iso()
+                )
+            )
 
             cancelled = False
             try:
@@ -217,7 +223,6 @@ class AgentRunner:
     
                 # 注册工具
                 task_manager = TaskManager(run_path / ".tasks")
-                session_id_str = session.id if session is not None else ""
                 child_runs_dir = (
                     store.runs_dir(session.id)
                     if session is not None and store is not None
@@ -267,6 +272,7 @@ class AgentRunner:
                     status=ctx.status,
                     reason=ctx.reason,
                     steps=ctx.step,
+                    session_id=session_id,
                     ts=now_iso(),
                 )
             )
@@ -312,7 +318,12 @@ class AgentLoop:
         while not ctx.is_done():
             ctx.step += 1
             await self._bus.publish(
-                StepStartedEvent(run_id=ctx.run_id, step=ctx.step, ts=now_iso())
+                StepStartedEvent(
+                    run_id=ctx.run_id,
+                    step=ctx.step,
+                    session_id=self._session_id or None,
+                    ts=now_iso(),
+                )
             )
 
             # [plan] call LLM — API errors terminate the run
@@ -324,6 +335,7 @@ class AgentLoop:
                     run_id=ctx.run_id,
                     step=ctx.step,
                     system=ctx.system_prompt(_AGENT_SYSTEM_PROMPT),
+                    session_id=self._session_id or None,
                 )
             except asyncio.CancelledError:
                 ctx.mark_failed("cancelled")
@@ -391,5 +403,10 @@ class AgentLoop:
                 await self._compactor.compact(ctx, self._provider)
 
             await self._bus.publish(
-                StepFinishedEvent(run_id=ctx.run_id, step=ctx.step, ts=now_iso())
+                StepFinishedEvent(
+                    run_id=ctx.run_id,
+                    step=ctx.step,
+                    session_id=self._session_id or None,
+                    ts=now_iso(),
+                )
             )

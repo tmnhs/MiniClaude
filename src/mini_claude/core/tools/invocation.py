@@ -29,6 +29,7 @@ async def _fail(
     elapsed_ms: int,
     *,
     attempt: int = 1,
+    session_id: str = "",
 ) -> ToolResult:
     await bus.publish(
         ToolCallFailedEvent(
@@ -39,6 +40,7 @@ async def _fail(
             error_message=error_message,
             elapsed_ms=elapsed_ms,
             attempt=attempt,
+            session_id=session_id or None,
             ts=now_iso(),
         )
     )
@@ -64,6 +66,7 @@ async def invoke_tool(
             tool_use_id=tool_call.id,
             tool_name=tool_call.name,
             params=dict(tool_call.input),
+            session_id=session_id or None,
             ts=now_iso(),
         )
     )
@@ -76,6 +79,7 @@ async def invoke_tool(
         return await _fail(
             bus, run_id, tool_call,
             "runtime_error", f"unknown tool: {tool_call.name}", elapsed(),
+            session_id=session_id,
         )
 
     # 参数校验
@@ -86,6 +90,7 @@ async def invoke_tool(
             return await _fail(
                 bus, run_id, tool_call,
                 "schema_error", str(exc), elapsed(),
+                session_id=session_id,
             )
 
     # 权限审批
@@ -108,6 +113,7 @@ async def invoke_tool(
                         run_id=run_id,
                         tool_use_id=tool_call.id,
                         decision=decision,
+                        session_id=session_id or None,
                         ts=now_iso(),
                     )
                 )
@@ -118,6 +124,7 @@ async def invoke_tool(
                         run_id=run_id,
                         tool_use_id=tool_call.id,
                         decision=decision,
+                        session_id=session_id or None,
                         ts=now_iso(),
                     )
                 )
@@ -128,6 +135,7 @@ async def invoke_tool(
                 "Permission denied by user. You may not execute this command. "
                 "Try an alternative approach or ask the user what to do.",
                 elapsed(),
+                session_id=session_id,
             )
 
     # 执行
@@ -152,6 +160,7 @@ async def invoke_tool(
                         tool_name=tool_call.name,
                         elapsed_ms=ms,
                         output=result.content,
+                        session_id=session_id or None,
                         ts=now_iso(),
                     )
                 )
@@ -165,6 +174,7 @@ async def invoke_tool(
                 bus, run_id, tool_call,
                 "timeout", f"tool timed out after {timeout}s", elapsed(),
                 attempt=attempt,
+                session_id=session_id,
             )
         except Exception as exc:
             error_class = "runtime_error"
@@ -183,6 +193,7 @@ async def invoke_tool(
                     error_message=error_message,
                     elapsed_ms=ms,
                     attempt=attempt,
+                    session_id=session_id or None,
                     ts=now_iso(),
                 )
             )
@@ -194,6 +205,7 @@ async def invoke_tool(
             bus, run_id, tool_call,
             error_class, error_message, ms,
             attempt=attempt,
+            session_id=session_id,
         )
 
     return ToolResult(content="internal error", is_error=True, error_type="runtime_error")

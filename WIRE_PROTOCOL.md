@@ -297,6 +297,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `type` | `string` | no |
 | `mode` | `string` | no |
 | `title` | `string` | no |
+| `session_id` | `string | null` | no |
 
 ```json
 {
@@ -320,6 +321,19 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       "default": "",
       "title": "Title",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     }
   },
   "title": "SessionCreateCommand",
@@ -588,6 +602,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `type` | `string` | no |
 | `tool_use_id` | `string` | yes |
 | `decision` | `string` | yes |
+| `session_id` | `string` | yes |
 
 ```json
 {
@@ -605,11 +620,16 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     "decision": {
       "title": "Decision",
       "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
     }
   },
   "required": [
     "tool_use_id",
-    "decision"
+    "decision",
+    "session_id"
   ],
   "title": "PermissionRespondCommand",
   "type": "object"
@@ -850,6 +870,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `goal` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -868,6 +889,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "goal": {
       "title": "Goal",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -904,6 +937,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `status` | `string` | yes |
 | `reason` | `string | null` | no |
 | `steps` | `integer` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -938,6 +972,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "steps": {
       "title": "Steps",
       "type": "integer"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -975,6 +1021,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `step` | `integer` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -993,6 +1040,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "step": {
       "title": "Step",
       "type": "integer"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1027,6 +1086,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `step` | `integer` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1045,6 +1105,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "step": {
       "title": "Step",
       "type": "integer"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1081,6 +1153,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool_use_id` | `string` | yes |
 | `tool_name` | `string` | yes |
 | `params` | `object` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1108,6 +1181,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "additionalProperties": true,
       "title": "Params",
       "type": "object"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1151,6 +1236,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool_name` | `string` | yes |
 | `elapsed_ms` | `integer` | yes |
 | `output` | `string` | no |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1182,6 +1268,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": "",
       "title": "Output",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1225,6 +1323,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `error_message` | `string` | yes |
 | `attempt` | `integer` | no |
 | `elapsed_ms` | `integer` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1264,6 +1363,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "elapsed_ms": {
       "title": "Elapsed Ms",
       "type": "integer"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1308,6 +1419,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `model` | `string` | yes |
 | `strategy` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1330,6 +1442,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "strategy": {
       "title": "Strategy",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1366,6 +1490,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `token` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1384,6 +1509,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "token": {
       "title": "Token",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1422,6 +1559,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `cache_read_input_tokens` | `integer` | yes |
 | `cache_creation_input_tokens` | `integer` | yes |
 | `context_pct` | `number` | no |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1457,6 +1595,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
       "default": 0.0,
       "title": "Context Pct",
       "type": "number"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1499,6 +1649,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `level` | `string` | yes |
 | `source` | `string` | yes |
 | `message` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1525,6 +1676,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "message": {
       "title": "Message",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1897,6 +2060,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `tool_use_id` | `string` | yes |
 | `decision` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1919,6 +2083,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "decision": {
       "title": "Decision",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1956,6 +2132,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `tool_use_id` | `string` | yes |
 | `decision` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -1978,6 +2155,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "decision": {
       "title": "Decision",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -2085,6 +2274,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `parent_run_id` | `string` | yes |
 | `description` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -2107,6 +2297,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "description": {
       "title": "Description",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -2144,6 +2346,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `run_id` | `string` | yes |
 | `parent_run_id` | `string` | yes |
 | `status` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -2166,6 +2369,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "status": {
       "title": "Status",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -2205,6 +2420,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `skill_name` | `string` | yes |
 | `arguments` | `string` | yes |
 | `run_id` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -2227,6 +2443,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "run_id": {
       "title": "Run Id",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
