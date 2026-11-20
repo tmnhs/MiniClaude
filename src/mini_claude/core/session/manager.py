@@ -7,11 +7,12 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from mini_claude.core.bus.envelope import HandlerError
-from mini_claude.core.bus.events import SessionClosedEvent, SessionCreatedEvent, SessionMessageReceivedEvent, SessionResumedEvent, SessionWaitingForInputEvent
+from mini_claude.core.bus.events import SessionClosedEvent, SessionCreatedEvent, SessionMessageReceivedEvent, SessionResumedEvent, SessionWaitingForInputEvent, SkillInvokedEvent
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.session.model import Session, SessionMode
 from mini_claude.core.session.store import SessionStore
+from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.utils.runs_dir import new_run_id
 from mini_claude.core.utils.time import now_iso
 
@@ -37,6 +38,7 @@ class SessionManager:
         self._provider = provider
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._skill_loader = SkillLoader()
 
     # 创建新 session 并写入 meta.json
     async def create(self, mode: SessionMode, title: str = "") -> Session:
@@ -85,12 +87,39 @@ class SessionManager:
             session.updated_at = now_iso()
             self._store.write_meta(session)
 
+            # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
+            goal = content
+            system_prompt_override: str | None = None
+            tool_whitelist: list[str] | None = None
+
+            if content.startswith("/"):
+                parts = content[1:].split(None, 1)
+                skill_name = parts[0]
+                arguments = parts[1] if len(parts) > 1 else ""
+                skill = self._skill_loader.resolve(skill_name)
+
+                if skill is not None:
+                    goal = self._skill_loader.render_prompt(skill, arguments)
+                    system_prompt_override = skill.system_prompt_template
+                    tool_whitelist = skill.allowed_tools or None
+
+                    await self._bus.publish(
+                        SkillInvokedEvent(
+                            skill_name=skill_name,
+                            arguments=arguments,
+                            run_id=run_id,
+                            ts=now_iso(),
+                        )
+                    )
+
             runner = self._runner_factory()
             await runner.run_and_capture(
-                content,
+                goal=goal,
                 run_id=run_id,
                 session=session,
                 store=self._store,
+                system_prompt_override=system_prompt_override,
+                tool_whitelist=tool_whitelist,
             )
 
             session.updated_at = now_iso()

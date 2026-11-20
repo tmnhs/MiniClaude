@@ -21,11 +21,8 @@ class ExecutionContext:
     status: str = RUNNING  # "running" | "success" | "failed"
     reason: str | None = None
     result: str = ""
-
-    # 初始化时将 goal 作为第一条用户消息写入消息历史
-    def __post_init__(self) -> None:
-        if not self.messages:
-            self.messages.append({"role": "user", "content": self.goal})
+    # skill 或 subagent 角色可覆盖默认 system prompt
+    system_prompt_override: str | None = None
 
     # 初始化消息历史，优先使用 session 完整回放内容
     def __post_init__(self) -> None:
@@ -37,7 +34,7 @@ class ExecutionContext:
     # 返回当前 run 的 system prompt，必要时注入 session notes
     def system_prompt(self, base: str) -> str:
         # FIXME: 直接注入是否有安全问题
-        parts = [base]
+        parts = [self.system_prompt_override if self.system_prompt_override else base]
         if self.global_context.strip():
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
 

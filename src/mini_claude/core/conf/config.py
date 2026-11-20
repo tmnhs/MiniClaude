@@ -7,25 +7,34 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from mini_claude.core.conf.model import _DEFAULT_CONFIG_PATH, MiniClaudeConfig
+from mini_claude.core.conf.model import _DEFAULT_CONFIG_PATH, McpServerConfig, MiniClaudeConfig
 
 
-# 构建并返回运行时配置：默认值 → TOML → .env → 系统环境变量（后者优先级最高）
+# 构建并返回运行时配置：默认值 → 全局 TOML → 项目本地 TOML → .env → 系统环境变量（后者优先级最高）
 def get_config() -> MiniClaudeConfig:
     config = MiniClaudeConfig()
 
     # .env 必须在读取 MINICLAUDE_CONFIG 之前加载，以便 .env 中的 MINICLAUDE_CONFIG 能影响 TOML 路径
     load_dotenv(".env", override=False)
 
-    config_path = Path(os.environ.get("MINICLAUDE_CONFIG", _DEFAULT_CONFIG_PATH)).expanduser()
+    # 若显式指定 MINICLAUDE_CONFIG，只读该文件；否则按优先级叠加：全局 → 项目本地
+    explicit = os.environ.get("MINICLAUDE_CONFIG")
+    if explicit:
+        config_paths = [Path(explicit).expanduser()]
+    else:
+        config_paths = [
+            Path(_DEFAULT_CONFIG_PATH).expanduser(),
+            Path(".mc/config.toml"),
+        ]
 
-    if config_path.exists():
-        try:
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
-            raise SystemExit(f"Config parse error ({config_path}): {e}") from e
-        _apply_toml(config, data)
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, "rb") as f:
+                    data = tomllib.load(f)
+            except tomllib.TOMLDecodeError as e:
+                raise SystemExit(f"Config parse error ({config_path}): {e}") from e
+            _apply_toml(config, data)
 
     _apply_env(config)
     return config
@@ -33,7 +42,7 @@ def get_config() -> MiniClaudeConfig:
 
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程
 def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
-    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission","compaction"}
+    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission", "compaction", "mcp"}
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
 
@@ -44,11 +53,13 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_core: set[str] = set(core.keys()) - {"host", "port"}
         if unknown_core:
             raise SystemExit(f"Unknown [core] keys: {', '.join(sorted(unknown_core))}")
+        
         if "host" in core:
             val = core["host"]
             if not isinstance(val, str):
                 raise SystemExit("Config error: core.host must be a string")
             config.host = val
+
         if "port" in core:
             val = core["port"]
             if not isinstance(val, int):
@@ -59,9 +70,11 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         log = data["logging"]
         if not isinstance(log, dict):
             raise SystemExit("Config error: [logging] must be a table")
+        
         unknown_log: set[str] = set(log.keys()) - {"level", "file", "format"}
         if unknown_log:
             raise SystemExit(f"Unknown [logging] keys: {', '.join(sorted(unknown_log))}")
+        
         for key in ("level", "file", "format"):
             if key in log:
                 val = log[key]
@@ -76,6 +89,7 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_agent: set[str] = set(agent.keys()) - {"max_steps"}
         if unknown_agent:
             raise SystemExit(f"Unknown [agent] keys: {', '.join(sorted(unknown_agent))}")
+        
         if "max_steps" in agent:
             val = agent["max_steps"]
             if not isinstance(val, int) or val <= 0:
@@ -89,11 +103,13 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_llm: set[str] = set(llm.keys()) - {"default_model", "router"}
         if unknown_llm:
             raise SystemExit(f"Unknown [llm] keys: {', '.join(sorted(unknown_llm))}")
+        
         if "default_model" in llm:
             val = llm["default_model"]
             if not isinstance(val, str):
                 raise SystemExit("Config error: llm.default_model must be a string")
             config.llm.default_model = val
+
         if "router" in llm:
             val = llm["router"]
             if not isinstance(val, str):
@@ -107,16 +123,19 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_trace: set[str] = set(trace.keys()) - {"enabled", "file", "include_llm_payload"}
         if unknown_trace:
             raise SystemExit(f"Unknown [trace] keys: {', '.join(sorted(unknown_trace))}")
+        
         if "enabled" in trace:
             val = trace["enabled"]
             if not isinstance(val, bool):
                 raise SystemExit("Config error: trace.enabled must be a boolean")
             config.trace.enabled = val
+
         if "file" in trace:
             val = trace["file"]
             if not isinstance(val, str):
                 raise SystemExit("Config error: trace.file must be a string")
             config.trace.file = val
+
         if "include_llm_payload" in trace:
             val = trace["include_llm_payload"]
             if not isinstance(val, bool):
@@ -130,6 +149,7 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_perm: set[str] = set(perm.keys()) - {"timeout_s"}
         if unknown_perm:
             raise SystemExit(f"Unknown [permission] keys: {', '.join(sorted(unknown_perm))}")
+        
         if "timeout_s" in perm:
             val = perm["timeout_s"]
             if not isinstance(val, (int, float)) or val < 0:
@@ -143,21 +163,81 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
         unknown_comp: set[str] = set(comp.keys()) - {"auto_threshold", "tool_result_limit", "tool_result_keep"}
         if unknown_comp:
             raise SystemExit(f"Unknown [compaction] keys: {', '.join(sorted(unknown_comp))}")
+        
         if "auto_threshold" in comp:
             val = comp["auto_threshold"]
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise SystemExit("Config error: compaction.auto_threshold must be between 0 and 1")
             config.compaction.auto_threshold = float(val)
+
         if "tool_result_limit" in comp:
             val = comp["tool_result_limit"]
             if not isinstance(val, int) or val <= 0:
                 raise SystemExit("Config error: compaction.tool_result_limit must be a positive integer")
             config.compaction.tool_result_limit = val
+
         if "tool_result_keep" in comp:
             val = comp["tool_result_keep"]
             if not isinstance(val, int) or val <= 0:
                 raise SystemExit("Config error: compaction.tool_result_keep must be a positive integer")
             config.compaction.tool_result_keep = val
+
+    if "mcp" in data:
+        mcp = data["mcp"]
+        if not isinstance(mcp, dict):
+            raise SystemExit("Config error: [mcp] must be a table")
+        unknown_mcp: set[str] = set(mcp.keys()) - {"servers"}
+        if unknown_mcp:
+            raise SystemExit(f"Unknown [mcp] keys: {', '.join(sorted(unknown_mcp))}")
+        servers_raw = mcp.get("servers", [])
+
+        if not isinstance(servers_raw, list):
+            raise SystemExit("Config error: mcp.servers must be an array of tables")
+        
+        for i, srv in enumerate(servers_raw):
+            if not isinstance(srv, dict):
+                raise SystemExit(f"Config error: mcp.servers[{i}] must be a table")
+            
+            name = srv.get("name")
+            if not isinstance(name, str) or not name:
+                raise SystemExit(f"Config error: mcp.servers[{i}].name must be a non-empty string")
+            
+            transport = srv.get("transport", "stdio")
+            if transport not in ("stdio", "tcp"):
+                raise SystemExit(f"Config error: mcp.servers[{i}].transport must be 'stdio' or 'tcp'")
+            
+            s = McpServerConfig(name=name, transport=transport)
+            if "command" in srv:
+                val = srv["command"]
+                if not isinstance(val, str):
+                    raise SystemExit(f"Config error: mcp.servers[{i}].command must be a string")
+                s.command = val
+
+            if "args" in srv:
+                val = srv["args"]
+                if not isinstance(val, list):
+                    raise SystemExit(f"Config error: mcp.servers[{i}].args must be an array")
+                s.args = [str(a) for a in val]
+
+            if "env" in srv:
+                val = srv["env"]
+                if not isinstance(val, dict):
+                    raise SystemExit(f"Config error: mcp.servers[{i}].env must be a table")
+                s.env = {str(k): str(v) for k, v in val.items()}
+
+            if "host" in srv:
+                val = srv["host"]
+                if not isinstance(val, str):
+                    raise SystemExit(f"Config error: mcp.servers[{i}].host must be a string")
+                s.host = val
+
+            if "port" in srv:
+                val = srv["port"]
+                if not isinstance(val, int):
+                    raise SystemExit(f"Config error: mcp.servers[{i}].port must be an integer")
+                s.port = val
+
+            config.mcp.servers.append(s)
 
 
 # 用 MINICLAUDE_* 环境变量覆盖 config 中对应字段（若变量已设置）

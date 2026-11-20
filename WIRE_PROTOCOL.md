@@ -2075,6 +2075,187 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+## Subagent Events
+
+### SubagentStartedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `parent_run_id` | `string` | yes |
+| `description` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "subagent.started",
+      "default": "subagent.started",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "parent_run_id": {
+      "title": "Parent Run Id",
+      "type": "string"
+    },
+    "description": {
+      "title": "Description",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "parent_run_id",
+    "description",
+    "ts"
+  ],
+  "title": "SubagentStartedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "subagent.started",
+  "run_id": "20260516-100100-def456",
+  "parent_run_id": "20260516-100000-abc123",
+  "description": "\u5206\u6790 src/ \u76ee\u5f55",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+### SubagentFinishedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `run_id` | `string` | yes |
+| `parent_run_id` | `string` | yes |
+| `status` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "subagent.finished",
+      "default": "subagent.finished",
+      "title": "Type",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "parent_run_id": {
+      "title": "Parent Run Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "parent_run_id",
+    "status",
+    "ts"
+  ],
+  "title": "SubagentFinishedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "subagent.finished",
+  "run_id": "20260516-100100-def456",
+  "parent_run_id": "20260516-100000-abc123",
+  "status": "success",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
+## Skill Events
+
+### SkillInvokedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `skill_name` | `string` | yes |
+| `arguments` | `string` | yes |
+| `run_id` | `string` | yes |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "skill.invoked",
+      "default": "skill.invoked",
+      "title": "Type",
+      "type": "string"
+    },
+    "skill_name": {
+      "title": "Skill Name",
+      "type": "string"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "skill_name",
+    "arguments",
+    "run_id",
+    "ts"
+  ],
+  "title": "SkillInvokedEvent",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "type": "skill.invoked",
+  "skill_name": "review",
+  "arguments": "src/foo.py",
+  "run_id": "20260516-100000-abc123",
+  "ts": "2026-05-16T10:00:00.001Z"
+}
+```
+
 ## Error Codes
 
 | Code | Name | Meaning |

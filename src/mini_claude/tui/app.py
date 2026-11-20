@@ -4,24 +4,27 @@ import asyncio
 import logging
 import subprocess
 import sys
+import time
 from typing import Any
 
 from rich.markup import escape
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
-from textual.widget import Widget
 from textual.css.query import NoMatches
+from textual.widget import Widget
 from textual.widgets import Label, Static
-from textual import events
 
 from mini_claude.core.conf.config import MiniClaudeConfig
+from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
 from mini_claude.tui.widgets import (
     ChatTextArea,
     LLMStreamBlock,
     PermissionBlock,
     PermissionSelect,
+    SlashCompleteWidget,
     ToolCallBlock,
     _preview,
 )
@@ -55,7 +58,13 @@ class MiniClaudeTuiApp(App[None]):
     Static.run-err { color: red; padding: 0 2 1 2; }
     Static.usage { padding: 0 2; }
     Static.log-line { padding: 0 2; }
+    #banner { padding: 1 2 0 2; }
     """
+
+    _BANNER = (
+        "[bold cyan]MiniClaude[/bold cyan]  [dim]·[/dim]  [dim]terminal agent[/dim]\n"
+        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  Ctrl+Q 退出[/dim]"
+    )
 
     # 初始化连接参数和 TUI 内部状态
     def __init__(self, host: str, port: int, replay_run_id: str | None = None) -> None:
@@ -71,6 +80,9 @@ class MiniClaudeTuiApp(App[None]):
         self._session_id: str | None = None
         self._busy = False
         self._last_context_pct: float = 0.0
+        self._slash_items: list[tuple[str, str]] = []
+        self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
+        self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
      # 构建 UI：顶部状态栏 + 可滚动事件日志
     def compose(self) -> ComposeResult:
@@ -78,12 +90,56 @@ class MiniClaudeTuiApp(App[None]):
         yield VerticalScroll(id="log-view")
         yield ChatTextArea(id="prompt", show_line_numbers=False)
 
-    # 挂载后启动 socket 连接 worker
+    # 挂载后启动 socket 连接 worker，并展示 banner / 预构建斜杠候选
     def on_mount(self) -> None:
+        self._slash_items = self._build_slash_items()
+        self._append(Static(self._BANNER, id="banner"))
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
         prompt.disabled = True
         prompt.border_title = "connecting..."
+
+    # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
+    def _build_slash_items(self) -> list[tuple[str, str]]:
+        items: list[tuple[str, str]] = [("compact", "compress context window")]
+        try:
+            for skill in SkillLoader().list_all_skills():
+                desc = skill.description.splitlines()[0] if skill.description else ""
+                if len(desc) > 60:
+                    desc = desc[:57] + "..."
+                items.append((skill.name, desc))
+        except Exception:
+            pass
+        return items
+
+    # 根据 / 前缀查询字符串挂载、更新或移除自动补全弹窗
+    def on_chat_text_area_slash_changed(self, event: ChatTextArea.SlashChanged) -> None:
+        query = event.query
+        if query is None:
+            try:
+                self.query_one(SlashCompleteWidget).remove()
+            except NoMatches:
+                pass
+            return
+
+        try:
+            popup = self.query_one(SlashCompleteWidget)
+            popup.set_query(query)
+        except NoMatches:
+            popup = SlashCompleteWidget(self._slash_items)
+            self.mount(popup, before="#prompt")
+            popup.set_query(query)
+
+    # 用户选中自动补全项后将 /{name} 填入输入框并移除弹窗
+    def on_slash_complete_widget_selected(self, event: SlashCompleteWidget.Selected) -> None:
+        prompt = self._prompt()
+        if prompt is not None:
+            prompt.text = f"/{event.skill_name} "
+            prompt.move_cursor(prompt.document.end)
+        try:
+            self.query_one(SlashCompleteWidget).remove()
+        except NoMatches:
+            pass
 
     # 记录按键焦点；当 PermissionSelect 失去焦点后作为兜底处理权限快捷键
     def on_key(self, event: events.Key) -> None:
@@ -327,6 +383,8 @@ class MiniClaudeTuiApp(App[None]):
                         "logger.*",
                         "permission.*",
                         "context.*",
+                        "subagent.*",
+                        "skill.*",
                     ],
                     "scope": "global",
                 }
@@ -431,7 +489,50 @@ class MiniClaudeTuiApp(App[None]):
                 classes="run-header",
             ))
 
+        elif t == "skill.invoked":
+            skill_name = str(event.get("skill_name", ""))
+            arguments = str(event.get("arguments", ""))
+            args_preview = _preview(arguments, 80) if arguments else ""
+            args_part = f"  [dim]{escape(args_preview)}[/dim]" if args_preview else ""
+            self._append(Static(
+                f"[bold cyan]/{escape(skill_name)}[/bold cyan]{args_part}",
+                classes="log-line",
+            ))
+
+        elif t == "subagent.started":
+            run_id = str(event.get("run_id", ""))
+            description = str(event.get("description", ""))
+            self._subagent_run_ids[run_id] = description
+            self._subagent_start_times[run_id] = time.monotonic()
+            short_id = run_id[:8] if len(run_id) >= 8 else run_id
+            desc_part = escape(_preview(description, 72))
+            self._append(Static(
+                f"[dim]┌─[/dim] [cyan]{desc_part}[/cyan]  [dim]{short_id}[/dim]",
+                classes="log-line",
+            ))
+
+        elif t == "subagent.finished":
+            run_id = str(event.get("run_id", ""))
+            status = event.get("status", "")
+            description = self._subagent_run_ids.pop(run_id, str(event.get("description", "")))
+            start = self._subagent_start_times.pop(run_id, None)
+            elapsed = f"  [dim]{time.monotonic() - start:.1f}s[/dim]" if start is not None else ""
+            desc_part = f"[cyan]{escape(_preview(description, 72))}[/cyan]{elapsed}"
+            if status == "success":
+                self._append(Static(
+                    f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
+                    classes="log-line",
+                ))
+            else:
+                self._append(Static(
+                    f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
+                    classes="log-line",
+                ))
+
         elif t == "step.started":
+            run_id = str(event.get("run_id", ""))
+            if run_id in self._subagent_run_ids:
+                return
             step = event.get("step", "")
             self._append(Static(
                 f"[dim]step {step}[/dim]",
@@ -442,7 +543,10 @@ class MiniClaudeTuiApp(App[None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("tool_name", ""))
             params = event.get("params") or {}
+            run_id = str(event.get("run_id", ""))
             tc_block = ToolCallBlock(tool_name, params)
+            if run_id in self._subagent_run_ids:
+                tc_block.styles.padding = (0, 2, 0, 6)
             self._pending_tool_blocks[tool_use_id] = tc_block
             self._append(tc_block)
 
@@ -479,6 +583,9 @@ class MiniClaudeTuiApp(App[None]):
                 ))
 
         elif t == "llm.usage":
+            run_id = str(event.get("run_id", ""))
+            if run_id in self._subagent_run_ids:
+                return
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
             ctx_bar = self._render_ctx_bar(pct)

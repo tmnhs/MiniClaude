@@ -36,6 +36,7 @@ from mini_claude.core.conf.config import MiniClaudeConfig, get_config
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.provider import AnthropicProvider
 from mini_claude.core.log.logging_setup import setup_logging
+from mini_claude.core.mcp.server import McpServerManager
 from mini_claude.core.permissions.manager import PermissionManager
 from mini_claude.core.permissions.store import load_policy_file
 from mini_claude.core.runner import AgentRunner
@@ -61,6 +62,7 @@ class CoreApp():
         self._running_runs: set[asyncio.Task[None]] = set()
         self._sessions: SessionManager | None = None
         self._permission_manager: PermissionManager | None = None
+        self._mcp_manager: McpServerManager | None = None
 
     # 处理 core.ping 请求，返回服务版本、运行时长和接收时间
     async def _ping_handler(self, params: dict[str, Any]) -> PongResult:
@@ -239,6 +241,12 @@ class CoreApp():
         sessions_root = Path("~/.mc/sessions").expanduser()
         store = SessionStore(sessions_root)
         compact_provider = AnthropicProvider(self._config.llm.default_model)
+
+        self._mcp_manager = McpServerManager()
+        if self._config.mcp.servers:
+            logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
+            await self._mcp_manager.start_all(self._config.mcp.servers)
+
         self._sessions = SessionManager(
             store,
             runner_factory=lambda: AgentRunner( 
@@ -246,6 +254,7 @@ class CoreApp():
                 bus=self._bus,
                 trace=self._trace,
                 permission_manager=self._permission_manager,
+                mcp_manager=self._mcp_manager,
             ),  
             bus=self._bus,
             provider=compact_provider,
@@ -286,6 +295,9 @@ class CoreApp():
 
         if self._running_runs:
             await asyncio.gather(*self._running_runs, return_exceptions=True)
+
+        if self._mcp_manager is not None:
+            await self._mcp_manager.stop_all()
 
         await server.stop()
 

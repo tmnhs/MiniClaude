@@ -46,6 +46,20 @@ class CompactionConfig:
     tool_result_keep: int = 4_000   # 截断后保留的前缀字符数
 
 @dataclass
+class McpServerConfig:
+    name: str
+    transport: str = "stdio"       # "stdio" | "tcp"
+    command: str = ""              # stdio 专用：可执行文件路径
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    host: str = "localhost"        # tcp 专用
+    port: int = 3000               # tcp 专用
+
+@dataclass
+class McpConfig:
+    servers: list[McpServerConfig] = field(default_factory=list)
+
+@dataclass
 class MiniClaudeConfig:
     host: str = _DEFAULT_HOST
     port: int = _DEFAULT_PORT
@@ -55,4 +69,6 @@ class MiniClaudeConfig:
     trace: TraceConfig = field(default_factory=TraceConfig)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
+    mcp: McpConfig = field(default_factory=McpConfig)
+
 

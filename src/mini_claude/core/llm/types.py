@@ -22,3 +22,5 @@ class LlmResponse:
     tool_calls: list[ToolCallBlock] = field(default_factory=list)
     text: str = ""
     usage: UsageStats | None = None
+    # extended thinking blocks — must be preserved verbatim in conversation history
+    thinking_blocks: list[dict[str, object]] = field(default_factory=list)
