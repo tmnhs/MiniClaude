@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 
-from mini_claude.core.bus.events import RunFinishedEvent, RunStartedEvent, StepFinishedEvent, StepStartedEvent
+from mini_claude.core.bus.events import (
+    RunFinishedEvent,
+    RunStartedEvent,
+    StepFinishedEvent,
+    StepStartedEvent,
+)
 from mini_claude.core.compact.compactor import Compactor
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.context import ExecutionContext
-from mini_claude.core.events.bus import EventBus , EventHandler
+from mini_claude.core.events.bus import EventBus, EventHandler
 from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.llm.base import LLMProvider
 from mini_claude.core.llm.provider import AnthropicProvider
@@ -24,13 +29,13 @@ from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.tools.builtin import (
     BashTool,
     ListDirTool,
+    NoteSaveTool,
     ReadFileTool,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
     TaskUpdateTool,
     WriteFileTool,
-    NoteSaveTool,
 )
 from mini_claude.core.tools.invocation import invoke_tool
 from mini_claude.core.tools.registry import ToolRegistry
@@ -199,8 +204,10 @@ class AgentRunner:
 
             cancelled = False
             try:
-                 # 准备 LLM、工具注册表、循环控制器
-                provider : LLMProvider = self._provider or AnthropicProvider(self._config.llm.default_model)
+                # 准备 LLM、工具注册表、循环控制器
+                provider: LLMProvider = self._provider or AnthropicProvider(
+                    self._config.llm.default_model
+                )
                 if self._trace is not None:
                     provider = TracingProvider(
                         provider,
@@ -353,24 +360,22 @@ class AgentLoop:
                 for tc in response.tool_calls:
                     ctx.add_tool_result(
                         tc.id,
-                        "Error: output token limit reached before this tool call could be completed. "
-                        "Please break the task into smaller steps and try again.",
+                        "Error: output token limit reached before this tool call "
+                        "could be completed. Please break the task into smaller steps "
+                        "and try again.",
                         is_error=True,
                     )
 
+            # Termination check — end_turn wins over max_steps if both hit on same step
             if response.stop_reason == "end_turn":
                 ctx.result = response.text or ""
                 ctx.mark_success()
-            elif response.stop_reason != "tool_use":
-                logger.warning(
-                    "LLM stopped with unsupported reason %s: run_id: %s, step: %d",
-                    response.stop_reason,
-                    ctx.run_id,
-                    ctx.step,
-                )
-                # ctx.mark_failed(f"unsupported_stop_reason:{response.stop_reason}")
             elif ctx.step >= ctx.max_steps:
-                logger.error("LLM call exceeded max steps: %s, run_id: %s", ctx.max_steps, ctx.run_id)
+                logger.error(
+                    "LLM call exceeded max steps: %s, run_id: %s",
+                    ctx.max_steps,
+                    ctx.run_id,
+                )
                 ctx.mark_failed("exceeded_max_steps")
 
             # 工具结果追加完毕（messages 末尾为 user）后检查压缩，仅在 run 继续时触发
