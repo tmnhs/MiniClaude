@@ -42,7 +42,12 @@ def main() -> None:
 
     config = get_config()
     _setup_logging(config.logging.level)
-    app = MiniClaudeTuiApp(config.host, config.port, replay_run_id=args.replay)
+    app = MiniClaudeTuiApp(
+        config.host,
+        config.port,
+        replay_run_id=args.replay,
+        model=config.llm.default_model,
+    )
     app.run()
 
 
