@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import time
 import uuid
 from typing import Any
 
+from rich import box
+from rich.console import Group
 from rich.markup import escape
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -17,6 +23,7 @@ from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
+from mini_claude import __version__
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
@@ -59,20 +66,48 @@ class MiniClaudeTuiApp(App[None]):
     Static.run-err { color: red; padding: 0 2 1 2; }
     Static.usage { padding: 0 2; }
     Static.log-line { padding: 0 2; }
-    #banner { padding: 1 2 0 2; }
+    #welcome { padding: 1 2 0 2; }
     """
 
-    _BANNER = (
-        "[bold cyan]MiniClaude[/bold cyan]  [dim]·[/dim]  [dim]terminal agent[/dim]\n"
-        "[dim]  输入消息开始对话  ·  键入 / 触发 skill  ·  Ctrl+Q 退出[/dim]"
+    # 连接状态 → (展示文案, Rich 颜色)，用于欢迎面板与顶栏
+    _STATE_STYLE: dict[str, tuple[str, str]] = {
+        "ready":        ("connected",    "green"),
+        "running":      ("running",      "yellow"),
+        "connecting":   ("connecting",   "yellow"),
+        "disconnected": ("disconnected", "red"),
+    }
+
+    # 欢迎面板顶部的 "MINICLAUDE" 方块字形（5 行等高，整体宽 55 列）
+    _LOGO_ROWS: tuple[str, ...] = (
+        "█   █ ███ █   █ ███  ████ █       █   █   █ ████  █████",
+        "██ ██  █  ██  █  █  █     █      █ █  █   █ █   █ █    ",
+        "█ █ █  █  █ █ █  █  █     █     █████ █   █ █   █ ████ ",
+        "█   █  █  █  ██  █  █     █     █   █ █   █ █   █ █    ",
+        "█   █ ███ █   █ ███  ████ █████ █   █  ███  ████  █████",
+    )
+    # 字形自顶向下的青→蓝渐变
+    _LOGO_STYLES: tuple[str, ...] = (
+        "bold bright_cyan",
+        "bold bright_cyan",
+        "bold cyan",
+        "bold cyan",
+        "bold #00afaf",
     )
 
     # 初始化连接参数和 TUI 内部状态
-    def __init__(self, host: str, port: int, replay_run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        replay_run_id: str | None = None,
+        model: str | None = None,
+    ) -> None:
         super().__init__()
         self._host = host
         self._port = port
         self._replay_run_id = replay_run_id
+        self._model = model
+        self._welcome: Static | None = None
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
         self._pending_tool_blocks: dict[str, ToolCallBlock] = {}
@@ -89,12 +124,17 @@ class MiniClaudeTuiApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Label("[bold]MiniClaude[/bold]  [dim]connecting...[/dim]", id="header")
         yield VerticalScroll(id="log-view")
-        yield ChatTextArea(id="prompt", show_line_numbers=False)
+        yield ChatTextArea(
+            id="prompt",
+            show_line_numbers=False,
+            placeholder="输入消息，或键入 / 浏览命令  ·  Enter 发送  ·  Shift+Enter 换行",
+        )
 
-    # 挂载后启动 socket 连接 worker，并展示 banner / 预构建斜杠候选
+    # 挂载后启动 socket 连接 worker，并展示欢迎面板 / 预构建斜杠候选
     def on_mount(self) -> None:
         self._slash_items = self._build_slash_items()
-        self._append(Static(self._BANNER, id="banner"))
+        self._welcome = Static(self._render_welcome("connecting"), id="welcome")
+        self._append(self._welcome)
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         prompt = self.query_one("#prompt", ChatTextArea)
         prompt.disabled = True
@@ -342,8 +382,10 @@ class MiniClaudeTuiApp(App[None]):
         except NoMatches:
             return None
 
-    # 根据连接和运行状态刷新顶部标题
+    # 根据连接和运行状态刷新顶部标题与欢迎面板
     def _update_header(self, state: str) -> None:
+        self._update_welcome(state)
+
         try:
             header = self.query_one("#header", Label)
         except NoMatches:
@@ -362,6 +404,80 @@ class MiniClaudeTuiApp(App[None]):
             f"{session}  [{color}]{state}[/{color}]"
         )
 
+    # 将最新连接状态同步到欢迎面板；未挂载时静默跳过
+    def _update_welcome(self, state: str) -> None:
+        if self._welcome is None:
+            return
+        try:
+            self._welcome.update(self._render_welcome(state))
+        except Exception:
+            pass
+
+    # 将 home 目录折叠为 ~，便于在欢迎面板展示工作目录
+    @staticmethod
+    def _friendly_cwd() -> str:
+        try:
+            cwd = os.getcwd()
+        except OSError:
+            return "?"
+        home = os.path.expanduser("~")
+        if cwd == home:
+            return "~"
+        if cwd.startswith(home + os.sep):
+            return "~" + cwd[len(home):]
+        return cwd
+
+    # 将方块字形逐行拼接为带渐变色的 Rich Text
+    @classmethod
+    def _logo_text(cls) -> Text:
+        logo = Text()
+        for i, (row, style) in enumerate(zip(cls._LOGO_ROWS, cls._LOGO_STYLES)):
+            if i:
+                logo.append("\n")
+            logo.append(row, style=style)
+        return logo
+
+    # 构建 Claude Code 风格的欢迎面板：LOGO + 运行信息 + 快捷键提示
+    def _render_welcome(self, state: str) -> Panel:
+        tagline = Text()
+        tagline.append("✻ ", style="bold bright_cyan")
+        tagline.append("终端 AI Agent · 实时展示思考、工具调用与审批", style="dim")
+        tagline.append(f"   v{__version__}", style="dim")
+
+        info = Table.grid(padding=(0, 2))
+        info.add_column(style="dim", justify="left", no_wrap=True)
+        info.add_column()
+        info.add_row("cwd", Text(self._friendly_cwd()))
+        if self._model:
+            info.add_row("model", Text(self._model, style="cyan"))
+        if self._replay_run_id:
+            info.add_row("replay", Text(self._replay_run_id, style="magenta"))
+
+        label, color = self._STATE_STYLE.get(state, (state, "dim"))
+        core = Text()
+        core.append(f"{self._host}:{self._port}", style="dim")
+        core.append("   ● ", style=f"bold {color}")
+        core.append(label, style=color)
+        info.add_row("core", core)
+
+        tips = Table.grid(padding=(0, 2))
+        tips.add_column(style="cyan", no_wrap=True)
+        tips.add_column(style="dim")
+        tips.add_row("/", "浏览命令与 skills")
+        tips.add_row("Enter", "发送消息 · Shift/Alt/⌘+Enter 换行")
+        tips.add_row("Ctrl+Q", "退出")
+
+        body = Group(
+            self._logo_text(),
+            tagline,
+            Text(""),
+            info,
+            Text(""),
+            Text("提示", style="bold"),
+            tips,
+        )
+        return Panel(body, box=box.ROUNDED, border_style="grey37", padding=(0, 1))
+
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
     async def _socket_loop(self) -> None:
         header = self.query_one("#header", Label)
@@ -373,6 +489,7 @@ class MiniClaudeTuiApp(App[None]):
                 await client.connect()
             except (ConnectionRefusedError, OSError):
                 header.update("[bold]MiniClaude[/bold]  [red]not connected — retrying...[/red]")
+                self._update_welcome("disconnected")
                 await asyncio.sleep(2)
                 continue
 
@@ -429,6 +546,7 @@ class MiniClaudeTuiApp(App[None]):
                 await loop_task
             except IpcError as e:
                 header.update(f"[bold]MiniClaude[/bold]  [red]subscribe error: {e}[/red]")
+                self._update_welcome("disconnected")
             except asyncio.CancelledError:
                 # pending RPC future 被取消 = 连接在等待响应时断开：按断连处理并继续重连；
                 # 若是 worker 被主动取消（应用退出），继续向上传播
@@ -706,5 +824,10 @@ class MiniClaudeTuiApp(App[None]):
 
 # TUI 入口：读取配置并启动 MiniClaudeTuiApp
 def run(config: MiniClaudeConfig, replay_run_id: str | None = None) -> None:
-    app = MiniClaudeTuiApp(config.host, config.port, replay_run_id=replay_run_id)
+    app = MiniClaudeTuiApp(
+        config.host,
+        config.port,
+        replay_run_id=replay_run_id,
+        model=config.llm.default_model,
+    )
     app.run()
