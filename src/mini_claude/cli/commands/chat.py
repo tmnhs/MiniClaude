@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 from typing import Any
 
 from mini_claude.core.conf.config import MiniClaudeConfig
@@ -51,10 +52,31 @@ class ChatPrinter:
             self._ensure_newline()
             print("session closed.")
 
-# 在线程池中读取 stdin，避免阻塞 socket event loop
+# 在守护线程中读取 stdin，避免阻塞 socket event loop
+# 不用 run_in_executor：默认线程池的线程是非守护线程，Ctrl+C 取消等待后仍阻塞在 input()，
+# 解释器退出时 threading._shutdown 会 join 它们，导致挂起或 "Exception ignored" 报错
 async def _readline(prompt: str) -> str:
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, input, prompt)
+    future: asyncio.Future[str] = loop.create_future()
+
+    def _deliver(result: str | BaseException) -> None:
+        if future.done():
+            return
+        if isinstance(result, BaseException):
+            future.set_exception(result)
+        else:
+            future.set_result(result)
+
+    def _worker() -> None:
+        try:
+            line = input(prompt)
+        except BaseException as exc:
+            loop.call_soon_threadsafe(_deliver, exc)
+        else:
+            loop.call_soon_threadsafe(_deliver, line)
+
+    threading.Thread(target=_worker, name="mc-chat-readline", daemon=True).start()
+    return await future
 
 
 # 异步核心：创建 chat session，循环读取用户输入并发送到 daemon

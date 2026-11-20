@@ -18,8 +18,16 @@ from mini_claude.cli.commands.run import cmd_run
 from mini_claude.core.conf.config import get_config
 from mini_claude.core.log.logging_setup import setup_logging
 
-# CLI 主入口：解析命令行参数并分发到对应子命令
+# CLI 主入口：统一把 Ctrl+C 转成退出码 130，避免打印 KeyboardInterrupt 堆栈
 def main() -> None:
+    try:
+        _main()
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+# 解析命令行参数并分发到对应子命令
+def _main() -> None:
     parser = argparse.ArgumentParser(prog="mc", description="MiniClaude CLI")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
 
