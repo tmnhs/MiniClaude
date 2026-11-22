@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -15,6 +14,7 @@ from mini_claude.core.events.writer import EventWriter
 from mini_claude.core.subagent.registry import BackgroundTaskRegistry
 from mini_claude.core.tools.base import BaseTool, ToolResult
 from mini_claude.core.tools.builtin.bash import BashTool
+from mini_claude.core.tools.builtin.edit_file import EditFileTool
 from mini_claude.core.tools.builtin.list_dir import ListDirTool
 from mini_claude.core.tools.builtin.read_file import ReadFileTool
 from mini_claude.core.tools.builtin.task_create import TaskCreateTool
@@ -242,6 +242,7 @@ class SpawnAgentTool(BaseTool):
             ReadFileTool(),
             BashTool(),
             WriteFileTool(),
+            EditFileTool(),
             ListDirTool(),
         ]
         for t in _all_tools:

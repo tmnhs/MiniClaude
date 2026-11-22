@@ -3,9 +3,8 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
-from mini_claude.core.tools.paths import resolve_within_workspace
+from mini_claude.core.tools.limits import MAX_READ_BYTES, resolve_within_workspace
 
-_MAX_BYTES = 512 * 1024  # 512 KB
 
 class ReadFileParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -17,7 +16,7 @@ class ReadFileTool(BaseTool):
     description = (
         "Read the text content of a file. "
         "Path must be relative to the current working directory and may not escape it. "
-        "Files larger than 512 KB are truncated."
+        f"Files larger than {MAX_READ_BYTES // 1024} KB are truncated."
     )
     input_schema: dict[str, object] = {
         "type": "object",
@@ -37,8 +36,8 @@ class ReadFileTool(BaseTool):
         # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
         path = resolve_within_workspace(path_str)
         raw = path.read_bytes()  # 文件不存在时抛出 FileNotFoundError
-        truncated = len(raw) > _MAX_BYTES
-        text = raw[:_MAX_BYTES].decode("utf-8", errors="replace")
+        truncated = len(raw) > MAX_READ_BYTES
+        text = raw[:MAX_READ_BYTES].decode("utf-8", errors="replace")
         if truncated:
             text += "\n[truncated]"
 

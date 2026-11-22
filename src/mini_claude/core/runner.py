@@ -28,6 +28,7 @@ from mini_claude.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.tools.builtin import (
     BashTool,
+    EditFileTool,
     ListDirTool,
     NoteSaveTool,
     ReadFileTool,
@@ -104,7 +105,7 @@ class AgentRunner:
             return allowed is None or name in allowed
 
         registry = ToolRegistry()
-        for t in [ReadFileTool(), BashTool(), WriteFileTool(), ListDirTool()]:
+        for t in [ReadFileTool(), BashTool(), WriteFileTool(), EditFileTool(), ListDirTool()]:
             if _ok(t.name):
                 registry.register(t)
 
