@@ -5,15 +5,17 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
-from mini_claude.core.tools.paths import resolve_within_workspace
+from mini_claude.core.tools.limits import (
+    MAX_LIST_DEPTH,
+    MAX_LIST_ENTRIES,
+    resolve_within_workspace,
+)
 
-_MAX_DEPTH = 4
-_MAX_ENTRIES = 200
 
 class ListDirParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
     path: str = "."
-    max_depth: int = Field(default=2, ge=1, le=_MAX_DEPTH)
+    max_depth: int = Field(default=2, ge=1, le=MAX_LIST_DEPTH)
 
 class ListDirTool(BaseTool):
     params_model = ListDirParams
@@ -22,7 +24,7 @@ class ListDirTool(BaseTool):
         "List the contents of a directory as a tree. "
         "Path must be relative to the current working directory and may not escape it. "
         "Hidden entries (starting with .) are included. "
-        f"Maximum depth is {_MAX_DEPTH}, maximum total entries is {_MAX_ENTRIES}."
+        f"Maximum depth is {MAX_LIST_DEPTH}, maximum total entries is {MAX_LIST_ENTRIES}."
     )
     input_schema: dict[str, object] = {
         "type": "object",
@@ -33,7 +35,9 @@ class ListDirTool(BaseTool):
             },
             "max_depth": {
                 "type": "integer",
-                "description": f"How many levels deep to recurse (default 2, max {_MAX_DEPTH}).",
+                "description": (
+                    f"How many levels deep to recurse (default 2, max {MAX_LIST_DEPTH})."
+                ),
             },
         },
         "required": [],
@@ -57,11 +61,11 @@ class ListDirTool(BaseTool):
 
         def _walk(directory: Path, depth: int, prefix: str) -> None:
             nonlocal count
-            if depth > max_depth or count >= _MAX_ENTRIES:
+            if depth > max_depth or count >= MAX_LIST_ENTRIES:
                 return
             entries = sorted(directory.iterdir(), key=lambda e: (e.is_file(), e.name))
             for i, entry in enumerate(entries):
-                if count >= _MAX_ENTRIES:
+                if count >= MAX_LIST_ENTRIES:
                     lines.append(f"{prefix}... (truncated)")
                     return
         

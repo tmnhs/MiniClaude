@@ -3,9 +3,8 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
-from mini_claude.core.tools.paths import resolve_within_workspace
+from mini_claude.core.tools.limits import MAX_WRITE_BYTES, resolve_within_workspace
 
-_MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 
 class WriteFileParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -19,7 +18,7 @@ class WriteFileTool(BaseTool):
         "Write text content to a file, creating it (and any parent directories) if it "
         "does not exist, or overwriting it if it does. "
         "Path must be relative to the current working directory and may not escape it. "
-        "Content size is limited to 1 MB."
+        f"Content size is limited to {MAX_WRITE_BYTES // (1024 * 1024)} MB."
     )
     input_schema: dict[str, object] = {
         "type": "object",
@@ -46,9 +45,12 @@ class WriteFileTool(BaseTool):
         path = resolve_within_workspace(path_str)
 
         encoded = content.encode("utf-8")
-        if len(encoded) > _MAX_BYTES:
+        if len(encoded) > MAX_WRITE_BYTES:
             return ToolResult(
-                content=f"content too large: {len(encoded)} bytes (limit 1 MB)",
+                content=(
+                    f"content too large: {len(encoded)} bytes "
+                    f"(limit {MAX_WRITE_BYTES // (1024 * 1024)} MB)"
+                ),
                 is_error=True,
                 error_type="runtime_error",
             )

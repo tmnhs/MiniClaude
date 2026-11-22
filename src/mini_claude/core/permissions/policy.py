@@ -36,6 +36,7 @@ class ToolPolicy:
 DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "bash":       ToolPolicy(default=PermissionDecision.ASK),
     "write_file": ToolPolicy(default=PermissionDecision.ASK),
+    "edit_file":  ToolPolicy(default=PermissionDecision.ASK),
     "read_file":  ToolPolicy(default=PermissionDecision.ALLOW),
     "list_dir":   ToolPolicy(default=PermissionDecision.ALLOW),
     "note_save":  ToolPolicy(default=PermissionDecision.ALLOW),
@@ -49,6 +50,7 @@ _PREVIEW_KEY: dict[str, str] = {
     "bash":       "command",
     "read_file":  "path",
     "write_file": "path",
+    "edit_file":  "path",
     "list_dir":   "path",
     "note_save":  "content",
 }

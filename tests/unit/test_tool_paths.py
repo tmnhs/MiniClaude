@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mini_claude.core.tools.paths import resolve_within_workspace
+from mini_claude.core.tools.limits import resolve_within_workspace
 
 
 # 功能：验证工作区内的普通相对路径被解析为工作区下的绝对路径
