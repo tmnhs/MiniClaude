@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mini_claude.core.conf.model import SandboxConfig
 from mini_claude.core.tools.base import BaseTool, ToolResult
 from mini_claude.core.tools.limits import (
     DEFAULT_BASH_TIMEOUT,
     MAX_BASH_OUTPUT_BYTES,
     MAX_BASH_TIMEOUT,
 )
+from mini_claude.core.tools.sandbox import SandboxUnavailableError, build_argv
 
 
 class BashParams(BaseModel):
@@ -45,18 +50,36 @@ class BashTool(BaseTool):
         "required": ["command"],
     }
 
+    # sandbox 由运行时（runner / spawn_agent）注入；直接构造时默认使用 workspace 隔离
+    def __init__(
+        self,
+        sandbox: SandboxConfig | None = None,
+        workspace: Path | None = None,
+    ) -> None:
+        self._sandbox = sandbox or SandboxConfig()
+        self._workspace = workspace
+
     # 在子进程中执行 shell 命令，合并 stdout/stderr，超时或非零退出码时返回错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
-        # FIXME: 如何确保bash命令是安全的？
         p = BashParams.model_validate(params)
         command = p.command
         timeout = p.timeout
+        workspace = (self._workspace or Path.cwd()).resolve()
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            argv = build_argv(command, workspace, self._sandbox)
+        except SandboxUnavailableError as exc:
+            return ToolResult(
+                content=str(exc), is_error=True, error_type="sandbox_error"
+            )
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                cwd=workspace,
+                start_new_session=True,
             )
 
             try:
@@ -64,7 +87,11 @@ class BashTool(BaseTool):
                     proc.communicate(), timeout=timeout
                 )
             except TimeoutError:
-                proc.kill()
+                # start_new_session=True 使子进程成为独立进程组，killpg 可清理整个沙箱进程树
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 await proc.communicate()
                 return ToolResult(
                     content=f"[timeout after {timeout}s]",

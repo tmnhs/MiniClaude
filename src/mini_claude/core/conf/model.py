@@ -1,4 +1,4 @@
-from dataclasses import dataclass,field
+from dataclasses import dataclass, field
 
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 10721
@@ -9,6 +9,10 @@ _DEFAULT_CONFIG_PATH = "~/.mc/config.toml"
 _DEFAULT_MAX_STEPS = 20
 _DEFAULT_MODEL = "claude-sonnet-4-6"
 _DEFAULT_TRACE_FILE = "~/.mc/logs/trace.jsonl"
+_DEFAULT_SANDBOX_MODE = "workspace"
+
+# 沙箱支持的模式：off（不隔离）/ workspace（写限定工作区）/ strict（在 workspace 基础上禁网）
+SANDBOX_MODES: frozenset[str] = frozenset({"off", "workspace", "strict"})
 
 
 @dataclass
@@ -46,6 +50,12 @@ class CompactionConfig:
     tool_result_keep: int = 4_000   # 截断后保留的前缀字符数
 
 @dataclass
+class SandboxConfig:
+    mode: str = _DEFAULT_SANDBOX_MODE  # off | workspace | strict
+    allow_write: list[str] = field(default_factory=list)  # workspace 外额外可写路径
+    allow_read: list[str] = field(default_factory=list)   # 家目录外额外可读路径
+
+@dataclass
 class McpServerConfig:
     name: str
     transport: str = "stdio"       # "stdio" | "tcp"
@@ -69,6 +79,7 @@ class MiniClaudeConfig:
     trace: TraceConfig = field(default_factory=TraceConfig)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
 
 

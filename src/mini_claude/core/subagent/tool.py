@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.agents.loader import AgentProfile, AgentProfileLoader
 from mini_claude.core.bus.events import SubagentFinishedEvent, SubagentStartedEvent
+from mini_claude.core.conf.model import SandboxConfig
 from mini_claude.core.context import ExecutionContext
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.events.writer import EventWriter
@@ -88,6 +89,7 @@ class SpawnAgentTool(BaseTool):
         runs_dir: Path,
         session_id: str,
         depth: int = 0,
+        sandbox: SandboxConfig | None = None,
     ) -> None:
         self._provider = provider
         self._parent_bus = parent_bus
@@ -98,6 +100,7 @@ class SpawnAgentTool(BaseTool):
         self._runs_dir = runs_dir
         self._session_id = session_id
         self._depth = depth
+        self._sandbox = sandbox
 
     # 派生子 agent，前台时阻塞直到完成并返回结果，后台时立即返回 run_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -240,7 +243,7 @@ class SpawnAgentTool(BaseTool):
         registry = ToolRegistry()
         _all_tools = [
             ReadFileTool(),
-            BashTool(),
+            BashTool(sandbox=self._sandbox),
             WriteFileTool(),
             EditFileTool(),
             ListDirTool(),
@@ -270,6 +273,7 @@ class SpawnAgentTool(BaseTool):
                 runs_dir=self._runs_dir,
                 session_id=self._session_id,
                 depth=self._depth + 1,
+                sandbox=self._sandbox,
             )
 
             if _allowed("spawn_agent"):

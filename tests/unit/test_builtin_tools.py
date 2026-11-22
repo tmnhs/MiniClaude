@@ -4,17 +4,22 @@ from pathlib import Path
 
 import pytest
 
+from mini_claude.core.conf.model import SandboxConfig
 from mini_claude.core.tools.builtin.bash import BashTool
 from mini_claude.core.tools.builtin.list_dir import ListDirTool
 from mini_claude.core.tools.builtin.write_file import WriteFileTool
 
 # ── bash ──────────────────────────────────────────────────────────────────────
 
+# 单测只验证 shell 执行语义，显式关闭沙箱；沙箱行为由 test_sandbox.py 覆盖
+def _bash_off() -> BashTool:
+    return BashTool(sandbox=SandboxConfig(mode="off"))
+
 # 功能：验证成功命令的 stdout 出现在 ToolResult.content 中，is_error 为 False
 # 设计：用 echo 命令避免外部依赖，直接比较输出内容，无需 mock
 @pytest.mark.asyncio
 async def test_bash_success_stdout() -> None:
-    result = await BashTool().invoke({"command": "echo hello"})
+    result = await _bash_off().invoke({"command": "echo hello"})
     assert not result.is_error
     assert "hello" in result.content
 
@@ -23,7 +28,7 @@ async def test_bash_success_stdout() -> None:
 # 设计：`exit 2` 是最简单的非零退出；不依赖任何外部命令行为
 @pytest.mark.asyncio
 async def test_bash_nonzero_exit_is_error() -> None:
-    result = await BashTool().invoke({"command": "exit 2"})
+    result = await _bash_off().invoke({"command": "exit 2"})
     assert result.is_error
     assert "[exit 2]" in result.content
 
@@ -32,7 +37,7 @@ async def test_bash_nonzero_exit_is_error() -> None:
 # 设计：timeout=1s 搭配 sleep 2 必然超时；验证 error_type 而非 content，避免超时消息格式耦合
 @pytest.mark.asyncio
 async def test_bash_timeout() -> None:
-    result = await BashTool().invoke({"command": "sleep 5", "timeout": 1})
+    result = await _bash_off().invoke({"command": "sleep 5", "timeout": 1})
     assert result.is_error
     assert result.error_type == "timeout"
 
@@ -41,7 +46,7 @@ async def test_bash_timeout() -> None:
 # 设计：只写 stderr 的命令（>&2 echo），输出应该出现在合并后的 content 里
 @pytest.mark.asyncio
 async def test_bash_stderr_merged() -> None:
-    result = await BashTool().invoke({"command": "echo err >&2"})
+    result = await _bash_off().invoke({"command": "echo err >&2"})
     assert not result.is_error
     assert "err" in result.content
 
