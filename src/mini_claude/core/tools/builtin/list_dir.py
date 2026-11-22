@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mini_claude.core.tools.base import BaseTool, ToolResult
 from pydantic import BaseModel, ConfigDict, Field
 
+from mini_claude.core.tools.base import BaseTool, ToolResult
+from mini_claude.core.tools.paths import resolve_within_workspace
 
 _MAX_DEPTH = 4
 _MAX_ENTRIES = 200
@@ -19,7 +20,7 @@ class ListDirTool(BaseTool):
     name = "list_dir"
     description = (
         "List the contents of a directory as a tree. "
-        "Path must be relative to the current working directory. "
+        "Path must be relative to the current working directory and may not escape it. "
         "Hidden entries (starting with .) are included. "
         f"Maximum depth is {_MAX_DEPTH}, maximum total entries is {_MAX_ENTRIES}."
     )
@@ -44,11 +45,8 @@ class ListDirTool(BaseTool):
         path_str = p.path
         max_depth = p.max_depth
 
-        # 防止目录穿越
-        if ".." in Path(path_str).parts:
-            raise PermissionError(f"path traversal not allowed: {path_str}")
-
-        root = Path(path_str)
+        # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
+        root = resolve_within_workspace(path_str)
         if not root.exists():
             raise FileNotFoundError(f"no such directory: {path_str}")
         if not root.is_dir():
@@ -72,7 +70,8 @@ class ListDirTool(BaseTool):
                 lines.append(f"{prefix}{connector}{entry.name}{suffix}")
 
                 count += 1
-                if entry.is_dir() and depth < max_depth:
+                # 不递归进入符号链接目录，避免通过 symlink 列出工作区外的内容
+                if entry.is_dir() and not entry.is_symlink() and depth < max_depth:
                     extension = "    " if i == len(entries) - 1 else "│   "
                     _walk(entry, depth + 1, prefix + extension)
 

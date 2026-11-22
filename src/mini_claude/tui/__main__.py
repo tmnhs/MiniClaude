@@ -30,13 +30,19 @@ def _setup_logging(level: str) -> None:
     root.addHandler(handler)
 
 
-# mc-tui 入口：解析 --replay 参数后启动 TUI 应用
+# mc-tui 入口：解析 --replay / --resume 参数后启动 TUI 应用
 def main() -> None:
     parser = argparse.ArgumentParser(prog="mc-tui", description="MiniClaude TUI")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--replay",
         metavar="RUN_ID",
         help="Replay events from a past run on connect",
+    )
+    mode.add_argument(
+        "--resume",
+        metavar="SESSION_ID",
+        help="Resume a past session by id: replay its history and keep chatting",
     )
     args = parser.parse_args()
 
@@ -46,9 +52,16 @@ def main() -> None:
         config.host,
         config.port,
         replay_run_id=args.replay,
+        resume_session_id=args.resume,
         model=config.llm.default_model,
     )
-    app.run()
+    # 无论正常退出（Ctrl+Q）还是被中断，都提示用户可恢复的 session id
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.print_resume_hint()
 
 
 if __name__ == "__main__":

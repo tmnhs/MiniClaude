@@ -186,6 +186,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `topics` | `array` | yes |
 | `scope` | `string` | no |
 | `replay_from_run` | `string | null` | no |
+| `replay_from_session` | `string | null` | no |
 
 ```json
 {
@@ -219,6 +220,19 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       ],
       "default": null,
       "title": "Replay From Run"
+    },
+    "replay_from_session": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_-]{1,64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Replay From Session"
     }
   },
   "required": [
@@ -536,6 +550,102 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   ],
   "title": "SessionGetHistoryResult",
   "type": "object"
+}
+```
+
+### SessionResumeCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.resume",
+      "default": "session.resume",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "pattern": "^[A-Za-z0-9_-]{1,64}$",
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionResumeCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-8",
+  "method": "session.resume",
+  "params": {
+    "session_id": "sess-abc123def456"
+  }
+}
+```
+
+### SessionResumeResult
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | `string` | yes |
+| `status` | `string` | yes |
+| `run_count` | `integer` | no |
+
+```json
+{
+  "properties": {
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "waiting_for_input",
+        "closed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "run_count": {
+      "default": 0,
+      "title": "Run Count",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_id",
+    "status"
+  ],
+  "title": "SessionResumeResult",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-8",
+  "result": {
+    "session_id": "sess-abc123def456",
+    "status": "waiting_for_input",
+    "run_count": 3
+  }
 }
 ```
 

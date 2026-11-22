@@ -28,6 +28,8 @@ from mini_claude.core.bus.commands import (
     SessionCreateResult,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
+    SessionResumeCommand,
+    SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
 )
@@ -50,6 +52,11 @@ from mini_claude.core.utils.runs_dir import events_file, new_run_id
 from mini_claude.core.utils.time import now_iso
 
 logger = logging.getLogger(__name__)
+
+
+# session 文件根目录；抽成函数便于测试注入临时目录
+def _sessions_root() -> Path:
+    return Path("~/.mc/sessions").expanduser()
 
 
 class CoreApp():
@@ -115,6 +122,17 @@ class CoreApp():
         messages = await self._sessions.get_history(cmd.session_id)
         return SessionGetHistoryResult(messages=messages)
 
+    # 恢复已有 session（从磁盘加载 / 重新打开 closed 会话）并返回其状态
+    async def _session_resume_handler(self, params: dict[str, Any]) -> SessionResumeResult:
+        assert self._sessions is not None
+        cmd = SessionResumeCommand.model_validate(params)
+        session = await self._sessions.resume(cmd.session_id)
+        return SessionResumeResult(
+            session_id=session.id,
+            status=session.status,
+            run_count=len(session.run_ids),
+        )
+
     # 接收客户端权限审批响应，resolve 对应挂起的 Future
     async def _permission_respond_handler(self, params: dict[str, Any]) -> PermissionRespondResult:
         cmd = PermissionRespondCommand.model_validate(params)
@@ -155,6 +173,8 @@ class CoreApp():
         replay_events: list[dict[str, Any]] = []
         if cmd.replay_from_run is not None:
             replay_events = self._load_replay_events(cmd.replay_from_run, cmd.topics)
+        elif cmd.replay_from_session is not None:
+            replay_events = self._load_session_replay_events(cmd.replay_from_session, cmd.topics)
 
         sub_id = self._broadcaster.subscribe(writer, cmd.topics, cmd.scope)
         replayed_count = await self._write_replay_events(writer, replay_events)
@@ -179,11 +199,28 @@ class CoreApp():
     def _load_replay_events(self, run_id: str, topics: list[str]) -> list[dict[str, Any]]:
         path = events_file(run_id)
         if not path.exists():
-            for candidate in Path("~/.mc/sessions").expanduser().glob(
-                f"*/runs/{run_id}/events.jsonl"
-            ):
+            for candidate in _sessions_root().glob(f"*/runs/{run_id}/events.jsonl"):
                 path = candidate
                 break
+        return self._read_topic_events(path, topics)
+
+    # 按 session 回放：按 run 目录时间顺序拼接该会话所有 events.jsonl，再按 topic 过滤
+    def _load_session_replay_events(
+        self, session_id: str, topics: list[str]
+    ) -> list[dict[str, Any]]:
+        runs_dir = _sessions_root() / session_id / "runs"
+        if not runs_dir.is_dir():
+            return []
+
+        events: list[dict[str, Any]] = []
+        # run_id 以时间戳开头，按目录名排序即为时间顺序
+        for run_path in sorted(p for p in runs_dir.iterdir() if p.is_dir()):
+            events.extend(self._read_topic_events(run_path / "events.jsonl", topics))
+        return events
+
+    # 读取单个 events.jsonl，过滤掉不匹配 topics 或损坏的行
+    @staticmethod
+    def _read_topic_events(path: Path, topics: list[str]) -> list[dict[str, Any]]:
         if not path.exists():
             return []
 
@@ -246,8 +283,7 @@ class CoreApp():
         self._bus.subscribe(self._broadcaster.handle)
 
         # 初始化Session管理器
-        sessions_root = Path("~/.mc/sessions").expanduser()
-        store = SessionStore(sessions_root)
+        store = SessionStore(_sessions_root())
         compact_provider = AnthropicProvider(self._config.llm.default_model)
 
         self._mcp_manager = McpServerManager()
@@ -282,6 +318,7 @@ class CoreApp():
         server.register("session.create", self._session_create_handler)
         server.register("session.send_message", self._session_send_handler)
         server.register("session.get_history", self._session_history_handler)
+        server.register("session.resume", self._session_resume_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
         server.register("session.compact", self._session_compact_handler)

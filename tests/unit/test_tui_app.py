@@ -10,6 +10,7 @@ from textual.widgets import Static
 from mini_claude.tui.app import MiniClaudeTuiApp
 from mini_claude.tui.widgets import (
     LLMStreamBlock,
+    PermissionBlock,
     ToolCallBlock,
     _param_summary,
     _preview,
@@ -234,6 +235,107 @@ def test_tool_block_escapes_markup_in_params_and_output() -> None:
     Text.from_markup(captured[0])
 
 
+# 功能：验证回放中历史 permission.requested 只渲染只读记录，不弹出交互选择器
+# 设计：置 _replaying=True 后发送 permission.requested，断言不查询/挂载 PermissionSelect，
+#       再发送 permission.granted，断言记录被回填且从 pending 中移除
+def test_replay_permission_requested_is_read_only_and_resolves() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999, resume_session_id="sess-A")
+    widgets = _collect(app)
+    app._replaying = True
+    mounted: list[Any] = []
+    app._mount_permission_select = lambda sel: mounted.append(sel)  # type: ignore[method-assign]
+
+    app._handle_event(
+        {
+            "type": "permission.requested",
+            "tool_use_id": "uid-1",
+            "tool_name": "bash",
+            "param_preview": "command='ls'",
+            "session_id": "sess-A",
+            "run_id": "r",
+            "ts": "t",
+        }
+    )
+
+    assert len(widgets) == 1
+    assert isinstance(widgets[0], PermissionBlock)
+    assert "uid-1" in app._pending_permission_blocks
+    assert mounted == []  # 回放不挂载选择器
+
+    app._handle_event(
+        {
+            "type": "permission.granted",
+            "tool_use_id": "uid-1",
+            "decision": "allow_once",
+            "run_id": "r",
+            "ts": "t",
+        }
+    )
+
+    assert "uid-1" not in app._pending_permission_blocks
+    assert widgets[0]._resolved
+    assert "allowed (once)" in _text(widgets[0])
+
+
+# 功能：验证回放中 permission.denied 同样回填为只读结果
+# 设计：requested 后发送 denied，断言记录 resolved 且显示 denied 标签
+def test_replay_permission_denied_resolves_block() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999, resume_session_id="sess-A")
+    widgets = _collect(app)
+    app._replaying = True
+    app._mount_permission_select = lambda sel: None  # type: ignore[method-assign]
+
+    app._handle_event(
+        {
+            "type": "permission.requested",
+            "tool_use_id": "uid-2",
+            "tool_name": "bash",
+            "param_preview": "",
+            "session_id": "sess-A",
+            "run_id": "r",
+            "ts": "t",
+        }
+    )
+    app._handle_event(
+        {
+            "type": "permission.denied",
+            "tool_use_id": "uid-2",
+            "decision": "deny_once",
+            "run_id": "r",
+            "ts": "t",
+        }
+    )
+
+    assert "uid-2" not in app._pending_permission_blocks
+    assert widgets[0]._resolved
+    assert "denied" in _text(widgets[0])
+
+
+# 功能：验证实时模式 permission.requested 仍会挂载交互选择器并锁住输入框
+# 设计：_replaying=False，替换挂载方法记录调用，断言选择器被挂载（不回归审批交互）
+def test_live_permission_requested_mounts_select() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    _collect(app)
+    mounted: list[Any] = []
+    app._prompt = lambda: None  # type: ignore[method-assign]  # 未挂载 DOM，跳过输入框操作
+    app._mount_permission_select = lambda sel: mounted.append(sel)  # type: ignore[method-assign]
+
+    app._handle_event(
+        {
+            "type": "permission.requested",
+            "tool_use_id": "uid-3",
+            "tool_name": "bash",
+            "param_preview": "command='ls'",
+            "run_id": "r",
+            "ts": "t",
+        }
+    )
+
+    assert len(mounted) == 1
+    assert getattr(mounted[0], "_tool_use_id", None) == "uid-3"
+    assert "uid-3" in app._pending_permission_blocks
+
+
 # 功能：验证提交用户输入时会追加 user turn，并进入 busy 状态
 # 设计：用 fake client 替代 SocketClient，直接调用 on_chat_text_area_submitted，
 #       覆盖 TextArea 清空内容 + 设置 busy 占位符的核心状态迁移
@@ -402,3 +504,60 @@ def test_reset_session_state_clears_transient_fields() -> None:
     assert app._subagent_run_ids == {}
     assert app._subagent_start_times == {}
     assert app._current_llm is None
+
+
+# 功能：验证 resume_hint 使用最近一次 session id 生成可复制命令
+# 设计：直接设置 _last_session_id，断言提示文案含 --resume 与完整 sid
+def test_resume_hint_contains_session_id() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._last_session_id = "sess-abc123"
+
+    hint = app.resume_hint()
+
+    assert hint is not None
+    assert "mc-tui --resume sess-abc123" in hint
+
+
+# 功能：验证 replay 模式或尚未建立会话时不输出恢复提示
+# 设计：覆盖两种空场景，避免打印无意义的 --resume 命令
+def test_resume_hint_none_for_replay_or_no_session() -> None:
+    replay = MiniClaudeTuiApp("127.0.0.1", 9999, replay_run_id="run-old")
+    replay._last_session_id = "sess-abc"
+    assert replay.resume_hint() is None
+
+    fresh = MiniClaudeTuiApp("127.0.0.1", 9999)
+    assert fresh.resume_hint() is None
+
+
+# 功能：验证 print_resume_hint 在终端打印可复制的恢复命令
+# 设计：用 capsys 捕获 stdout，断言命令出现在输出中；replay 模式则保持静默
+def test_print_resume_hint_outputs_command(capsys: Any) -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._last_session_id = "sess-xyz789"
+
+    app.print_resume_hint()
+
+    out = capsys.readouterr().out
+    assert "mc-tui --resume sess-xyz789" in out
+
+    replay = MiniClaudeTuiApp("127.0.0.1", 9999, replay_run_id="run-old")
+    replay._last_session_id = "sess-xyz789"
+    replay.print_resume_hint()
+    assert capsys.readouterr().out == ""
+
+
+# 功能：验证退出时会先把恢复提示写入日志再调用 exit
+# 设计：未连接状态下调用 action_quit，截获 _append 内容与 exit 调用，
+#       断言提示含 --resume 且应用确实退出
+async def test_action_quit_appends_resume_hint() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._last_session_id = "sess-quit1"
+    captured: list[Any] = []
+    app._append = lambda widget: captured.append(widget)  # type: ignore[method-assign]
+    exited: list[bool] = []
+    app.exit = lambda *a, **k: exited.append(True)  # type: ignore[method-assign]
+
+    await app.action_quit()
+
+    assert exited == [True]
+    assert any("mc-tui --resume sess-quit1" in _text(w) for w in captured)
