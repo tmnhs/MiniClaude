@@ -105,7 +105,13 @@ class AgentRunner:
             return allowed is None or name in allowed
 
         registry = ToolRegistry()
-        for t in [ReadFileTool(), BashTool(), WriteFileTool(), EditFileTool(), ListDirTool()]:
+        for t in [
+            ReadFileTool(),
+            BashTool(sandbox=self._config.sandbox),
+            WriteFileTool(),
+            EditFileTool(),
+            ListDirTool(),
+        ]:
             if _ok(t.name):
                 registry.register(t)
 
@@ -138,6 +144,7 @@ class AgentRunner:
                         runs_dir=runs_dir,
                         session_id=session_id,
                         depth=0,
+                        sandbox=self._config.sandbox,
                     )
                 )
         

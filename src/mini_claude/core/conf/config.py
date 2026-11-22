@@ -1,13 +1,16 @@
 import os
-from dataclasses import dataclass,field
-from pathlib import Path
-from typing import Optional
 import tomllib
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
-from mini_claude.core.conf.model import _DEFAULT_CONFIG_PATH, McpServerConfig, MiniClaudeConfig
+from mini_claude.core.conf.model import (
+    _DEFAULT_CONFIG_PATH,
+    SANDBOX_MODES,
+    McpServerConfig,
+    MiniClaudeConfig,
+)
 
 
 # 构建并返回运行时配置：默认值 → 全局 TOML → 项目本地 TOML → .env → 系统环境变量（后者优先级最高）
@@ -42,7 +45,9 @@ def get_config() -> MiniClaudeConfig:
 
 # 将已解析的 TOML 根表写入 config；未知小节或类型错误时退出进程
 def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
-    unknown = set(data.keys()) - {"core", "logging", "agent", "llm", "trace", "permission", "compaction", "mcp"}
+    unknown = set(data.keys()) - {
+        "core", "logging", "agent", "llm", "trace", "permission", "compaction", "sandbox", "mcp"
+    }
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
 
@@ -182,6 +187,30 @@ def _apply_toml(config: MiniClaudeConfig, data: dict[str, Any]) -> None:
                 raise SystemExit("Config error: compaction.tool_result_keep must be a positive integer")
             config.compaction.tool_result_keep = val
 
+    if "sandbox" in data:
+        sbx = data["sandbox"]
+        if not isinstance(sbx, dict):
+            raise SystemExit("Config error: [sandbox] must be a table")
+        unknown_sbx: set[str] = set(sbx.keys()) - {"mode", "allow_write", "allow_read"}
+        if unknown_sbx:
+            raise SystemExit(f"Unknown [sandbox] keys: {', '.join(sorted(unknown_sbx))}")
+
+        if "mode" in sbx:
+            val = sbx["mode"]
+            if not isinstance(val, str) or val not in SANDBOX_MODES:
+                raise SystemExit(
+                    "Config error: sandbox.mode must be one of "
+                    f"{', '.join(sorted(SANDBOX_MODES))}"
+                )
+            config.sandbox.mode = val
+
+        for key in ("allow_write", "allow_read"):
+            if key in sbx:
+                val = sbx[key]
+                if not isinstance(val, list) or not all(isinstance(p, str) for p in val):
+                    raise SystemExit(f"Config error: sandbox.{key} must be an array of strings")
+                setattr(config.sandbox, key, list(val))
+
     if "mcp" in data:
         mcp = data["mcp"]
         if not isinstance(mcp, dict):
@@ -310,6 +339,15 @@ def _apply_env(config: MiniClaudeConfig) -> None:
                 f"Config error: MINICLAUDE_PERMISSION_TIMEOUT_S must be a number, got: {perm_timeout!r}"
             )
 
+
+    sandbox_mode = os.environ.get("MINICLAUDE_SANDBOX_MODE")
+    if sandbox_mode is not None:
+        if sandbox_mode not in SANDBOX_MODES:
+            raise SystemExit(
+                "Config error: MINICLAUDE_SANDBOX_MODE must be one of "
+                f"{', '.join(sorted(SANDBOX_MODES))}, got: {sandbox_mode!r}"
+            )
+        config.sandbox.mode = sandbox_mode
 
     compact_threshold = os.environ.get("MINICLAUDE_COMPACT_THRESHOLD")
     if compact_threshold is not None:

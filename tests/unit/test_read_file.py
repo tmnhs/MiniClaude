@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from mini_claude.core.tools.builtin.read_file import ReadFileTool
+from mini_claude.core.tools.limits import MAX_READ_BYTES
 
 
 # 功能：验证读取存在的文件时返回完整内容且 is_error 为 False
@@ -82,29 +83,29 @@ async def test_symlink_escape_rejected(tmp_path: Path, monkeypatch: pytest.Monke
         await ReadFileTool().invoke({"path": "link.txt"})
 
 
-# 功能：验证超过 512KB 的文件被截断并在末尾追加 [truncated] 标记
-# 设计：写 600KB 文件，断言内容以 x×512KB 开头、以 [truncated] 结尾，确认截断不破坏前缀内容
-async def test_truncation_over_512kb(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / "big.txt").write_bytes(b"x" * (600 * 1024))
+# 功能：验证超过读取上限的文件被截断并在末尾追加 [truncated] 标记
+# 设计：基于 MAX_READ_BYTES 动态构造超限文件，断言内容以限制长度的 x 开头、以 [truncated] 结尾
+async def test_truncation_over_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "big.txt").write_bytes(b"x" * (MAX_READ_BYTES + 88 * 1024))
     monkeypatch.chdir(tmp_path)
     result = await ReadFileTool().invoke({"path": "big.txt"})
     assert not result.is_error
     assert result.content.endswith("[truncated]")
-    # 实际文本内容恰好是 512KB 的 'x' 字符
-    assert result.content.startswith("x" * (512 * 1024))
+    # 实际文本内容恰好是 MAX_READ_BYTES 个 'x' 字符
+    assert result.content.startswith("x" * MAX_READ_BYTES)
 
 
-# 功能：验证恰好等于 512KB 的文件不被截断（边界值：超过而非大于等于）
-# 设计：boundary check，确认截断阈值为"严格超过 512KB"，防止 off-by-one 错误
-async def test_exact_512kb_is_not_truncated(
+# 功能：验证恰好等于读取上限的文件不被截断（边界值：超过而非大于等于）
+# 设计：boundary check，确认截断阈值为"严格超过上限"，防止 off-by-one 错误
+async def test_exact_limit_is_not_truncated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "exact.txt").write_bytes(b"y" * (512 * 1024))
+    (tmp_path / "exact.txt").write_bytes(b"y" * MAX_READ_BYTES)
     monkeypatch.chdir(tmp_path)
     result = await ReadFileTool().invoke({"path": "exact.txt"})
     assert not result.is_error
     assert not result.content.endswith("[truncated]")
-    assert len(result.content) == 512 * 1024
+    assert len(result.content) == MAX_READ_BYTES
 
 
 # 功能：验证空文件返回空字符串而非 None 或错误

@@ -88,3 +88,71 @@ def test_priority_chain_full(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     cfg = get_config()
 
     assert cfg.port == 8000
+
+
+# 功能：验证沙箱模式默认为 workspace（安全的默认值）
+# 设计：隔离到临时目录与空配置，清除环境变量，确认默认配置不会退化为 off
+def test_sandbox_default_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINICLAUDE_CONFIG", str(tmp_path / "absent.toml"))
+    monkeypatch.delenv("MINICLAUDE_SANDBOX_MODE", raising=False)
+
+    cfg = get_config()
+
+    assert cfg.sandbox.mode == "workspace"
+    assert cfg.sandbox.allow_write == []
+    assert cfg.sandbox.allow_read == []
+
+
+# 功能：验证 [sandbox] 的 mode/allow_write/allow_read 被正确解析
+# 设计：写一份最小 TOML，确认三个字段都落到 SandboxConfig 上
+def test_sandbox_toml_parsed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    toml_path = tmp_path / "mc.toml"
+    toml_path.write_bytes(
+        b'[sandbox]\nmode = "strict"\n'
+        b'allow_write = ["/tmp/x"]\nallow_read = ["/tmp/y"]\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINICLAUDE_CONFIG", str(toml_path))
+    monkeypatch.delenv("MINICLAUDE_SANDBOX_MODE", raising=False)
+
+    cfg = get_config()
+
+    assert cfg.sandbox.mode == "strict"
+    assert cfg.sandbox.allow_write == ["/tmp/x"]
+    assert cfg.sandbox.allow_read == ["/tmp/y"]
+
+
+# 功能：验证非法 sandbox.mode 在配置加载阶段 fail-fast
+def test_sandbox_invalid_toml_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    toml_path = tmp_path / "mc.toml"
+    toml_path.write_bytes(b'[sandbox]\nmode = "jail"\n')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINICLAUDE_CONFIG", str(toml_path))
+    monkeypatch.delenv("MINICLAUDE_SANDBOX_MODE", raising=False)
+
+    with pytest.raises(SystemExit):
+        get_config()
+
+
+# 功能：验证 MINICLAUDE_SANDBOX_MODE 覆盖 TOML/默认值
+def test_sandbox_env_overrides_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINICLAUDE_CONFIG", str(tmp_path / "absent.toml"))
+    monkeypatch.setenv("MINICLAUDE_SANDBOX_MODE", "off")
+
+    cfg = get_config()
+
+    assert cfg.sandbox.mode == "off"
+
+
+# 功能：验证非法环境变量值 fail-fast
+def test_sandbox_invalid_env_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MINICLAUDE_CONFIG", str(tmp_path / "absent.toml"))
+    monkeypatch.setenv("MINICLAUDE_SANDBOX_MODE", "nope")
+
+    with pytest.raises(SystemExit):
+        get_config()
