@@ -145,3 +145,64 @@ async def test_create_rejects_invalid_session_id(tmp_path: Path) -> None:
         await manager.create("chat", session_id="../../escape")
     assert exc.value.code == SESSION_ID_INVALID
     assert not (tmp_path.parent / "escape").exists()
+
+
+# 功能：验证 resume 能把磁盘上的 closed 会话重新加载进内存并重新打开
+# 设计：同一 store 构造两个 manager 模拟 core 重启；第二个内存为空，resume 后应
+#       从 meta 加载、状态回到 waiting_for_input、历史可读、并能继续追加消息
+async def test_resume_loads_closed_session_from_disk(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    first = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    session = await first.create("chat")
+    await first.send_message(session.id, "hello")
+    await first.close(session.id)
+    assert store.read_meta(session.id).status == "closed"
+
+    second = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    resumed = await second.resume(session.id)
+
+    assert resumed.status == "waiting_for_input"
+    assert store.read_meta(session.id).status == "waiting_for_input"
+    assert len(await second.get_history(session.id)) >= 2
+    run_id = await second.send_message(session.id, "again")
+    assert store.read_meta(session.id).run_ids[-1] == run_id
+
+
+# 功能：验证 resume 不存在的 session 返回 session_not_found
+# 设计：内存和磁盘都没有该 id，断言结构化错误码，供 TUI 明确提示用户检查 sid
+async def test_resume_missing_session_raises(tmp_path: Path) -> None:
+    manager = SessionManager(SessionStore(tmp_path), lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    with pytest.raises(HandlerError) as exc:
+        await manager.resume("sess-missing")
+    assert exc.value.code == SESSION_NOT_FOUND
+
+
+# 功能：验证 resume 拒绝非法 session_id（防止路径穿越去读任意 meta.json）
+# 设计：传入含 "../" 的 id，断言 SESSION_ID_INVALID 且不触发磁盘读取
+async def test_resume_rejects_invalid_session_id(tmp_path: Path) -> None:
+    manager = SessionManager(SessionStore(tmp_path), lambda: _Runner(), EventBus())  # type: ignore[arg-type]
+    with pytest.raises(HandlerError) as exc:
+        await manager.resume("../../etc")
+    assert exc.value.code == SESSION_ID_INVALID
+
+
+# 功能：验证 resume 会发布 session.resumed 事件
+# 设计：订阅 EventBus，close 后清空事件，再 resume，断言只收到一条 session.resumed
+async def test_resume_publishes_resumed_event(tmp_path: Path) -> None:
+    events: list[object] = []
+    bus = EventBus()
+
+    async def collect(event: object) -> None:
+        events.append(event)
+
+    bus.subscribe(collect)
+    store = SessionStore(tmp_path)
+    first = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
+    session = await first.create("chat")
+    await first.close(session.id)
+    events.clear()
+
+    second = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
+    await second.resume(session.id)
+
+    assert [e.type for e in events] == ["session.resumed"]  # type: ignore[attr-defined]

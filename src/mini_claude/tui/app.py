@@ -25,6 +25,7 @@ from textual.widgets import Label, Static
 
 from mini_claude import __version__
 from mini_claude.core.conf.config import MiniClaudeConfig
+from mini_claude.core.session.manager import SESSION_NOT_FOUND
 from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
 from mini_claude.tui.widgets import (
@@ -101,11 +102,13 @@ class MiniClaudeTuiApp(App[None]):
         port: int,
         replay_run_id: str | None = None,
         model: str | None = None,
+        resume_session_id: str | None = None,
     ) -> None:
         super().__init__()
         self._host = host
         self._port = port
         self._replay_run_id = replay_run_id
+        self._resume_session_id = resume_session_id
         self._model = model
         self._welcome: Static | None = None
         self._client: SocketClient | None = None
@@ -116,6 +119,10 @@ class MiniClaudeTuiApp(App[None]):
         self._session_id: str | None = None
         self._busy = False
         self._last_context_pct: float = 0.0
+        # 最近一次使用的 session_id：连接断开也不清空，用于退出时提示 --resume
+        self._last_session_id: str | None = resume_session_id
+        # 是否正在回放历史事件：回放期间的审批记录只读，不弹出交互选择器
+        self._replaying = False
         self._slash_items: list[tuple[str, str]] = []
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
@@ -222,7 +229,28 @@ class MiniClaudeTuiApp(App[None]):
                 await self._client.send_command("session.close", {"session_id": self._session_id})
             except (IpcError, RuntimeError, OSError):
                 self._append(Static("[yellow]warning: failed to close session[/yellow]"))
+        hint = self.resume_hint()
+        if hint:
+            self._append(Static(hint, classes="log-line"))
         self.exit()
+
+    # 生成退出后可恢复会话的提示文本；replay 模式或尚无会话时返回 None
+    def resume_hint(self) -> str | None:
+        if self._replay_run_id is not None or not self._last_session_id:
+            return None
+        return (
+            "[dim]会话已保存 · 可随时恢复：[/dim]\n"
+            f"  [bold cyan]mc-tui --resume {self._last_session_id}[/bold cyan]"
+        )
+
+    # TUI 退出后（含 Ctrl+Q / 中断）在终端打印恢复提示，便于用户复制命令
+    def print_resume_hint(self) -> None:
+        if self._replay_run_id is not None or not self._last_session_id:
+            return
+        print(
+            "\n会话已保存，可随时恢复：\n"
+            f"  mc-tui --resume {self._last_session_id}\n"
+        )
 
     # 将输入框提交内容发送给当前 chat session
     async def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
@@ -361,6 +389,33 @@ class MiniClaudeTuiApp(App[None]):
             self._current_llm.finalize_markdown()
         self._current_llm = None
 
+    # 用 granted/denied 事件回填审批结果；回放时仅更新记录，不触碰输入框/选择器
+    def _resolve_permission_decision(self, tool_use_id: str, decision: str) -> None:
+        perm_block = self._pending_permission_blocks.pop(tool_use_id, None)
+        if perm_block is None:
+            return
+        perm_block._resolve(decision)
+
+        if self._replaying:
+            return
+
+        # 实时流中事件可能晚于本地决策到达：清掉残留的选择器，剩余无待审批时恢复输入框
+        try:
+            for select in self.query(PermissionSelect):
+                if getattr(select, "_tool_use_id", None) == tool_use_id:
+                    select.remove()
+                    break
+        except Exception:
+            logger.debug("failed to remove PermissionSelect tool_use_id=%s", tool_use_id)
+
+        if not self._pending_permission_blocks:
+            p = self._prompt()
+            if p is not None:
+                p.disabled = False
+                p.read_only = False
+                p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
+                p.focus()
+
     # 断连/换会话时清空瞬态状态，避免上一个会话的残留影响下一个
     def _reset_session_state(self) -> None:
         self._busy = False
@@ -452,6 +507,8 @@ class MiniClaudeTuiApp(App[None]):
             info.add_row("model", Text(self._model, style="cyan"))
         if self._replay_run_id:
             info.add_row("replay", Text(self._replay_run_id, style="magenta"))
+        if self._resume_session_id:
+            info.add_row("resume", Text(self._resume_session_id, style="magenta"))
 
         label, color = self._STATE_STYLE.get(state, (state, "dim"))
         core = Text()
@@ -503,10 +560,14 @@ class MiniClaudeTuiApp(App[None]):
 
             client.on_event(on_event)
 
+            fatal = False
             try:
-                # 客户端预生成 session_id，先订阅再创建：create 期间（含 session.created）
-                # 的事件不会因订阅尚未就绪而丢失；服务端收到 id 时直接使用
-                self._session_id = f"sess-{uuid.uuid4().hex[:12]}"
+                # 客户端预生成 session_id（或使用 --resume 指定的 id），先订阅再创建：
+                # create 期间（含 session.created）的事件不会因订阅尚未就绪而丢失
+                self._session_id = (
+                    self._resume_session_id or f"sess-{uuid.uuid4().hex[:12]}"
+                )
+                self._last_session_id = self._session_id
 
                 params: dict[str, Any] = {
                     "topics": [
@@ -527,13 +588,42 @@ class MiniClaudeTuiApp(App[None]):
 
                 if self._replay_run_id is not None:
                     params["replay_from_run"] = self._replay_run_id
+                elif self._resume_session_id is not None:
+                    params["replay_from_session"] = self._resume_session_id
 
-                await client.send_command("event.subscribe", params)
-                await client.send_command(
-                    "session.create",
-                    {"mode": "chat", "session_id": self._session_id},
+                # 回放期间标记 _replaying：历史审批只渲染为只读记录，
+                # 不弹出交互选择器，避免已审批的权限被重新选择
+                self._replaying = (
+                    self._replay_run_id is not None
+                    or self._resume_session_id is not None
                 )
-                logger.info("session created session_id=%s", self._session_id)
+                try:
+                    await client.send_command("event.subscribe", params)
+                finally:
+                    self._replaying = False
+                    # 清掉回放中悬空（缺少 granted/denied）的历史审批，避免干扰后续实时审批
+                    self._pending_permission_blocks.clear()
+
+                if self._resume_session_id is not None:
+                    info = await client.send_command(
+                        "session.resume", {"session_id": self._session_id}
+                    )
+                    run_count = int(info.get("run_count") or 0)
+                    logger.info(
+                        "session resumed session_id=%s runs=%d",
+                        self._session_id, run_count,
+                    )
+                    self._append(Static(
+                        f"[dim]↩ resumed[/dim] [cyan]{escape(self._session_id)}[/cyan]"
+                        f"  [dim]{run_count} runs[/dim]",
+                        classes="log-line",
+                    ))
+                else:
+                    await client.send_command(
+                        "session.create",
+                        {"mode": "chat", "session_id": self._session_id},
+                    )
+                    logger.info("session created session_id=%s", self._session_id)
 
                 prompt = self._prompt()
                 if prompt is not None:
@@ -545,7 +635,21 @@ class MiniClaudeTuiApp(App[None]):
 
                 await loop_task
             except IpcError as e:
-                header.update(f"[bold]MiniClaude[/bold]  [red]subscribe error: {e}[/red]")
+                if self._resume_session_id is not None:
+                    # 恢复失败（会话不存在 / id 非法等）重试无意义，向用户明确报错后停止
+                    fatal = True
+                    msg = "session not found" if e.code == SESSION_NOT_FOUND else str(e)
+                    self._append(Static(
+                        f"[bold red]✗ cannot resume[/bold red]  "
+                        f"[cyan]{escape(self._resume_session_id)}[/cyan]  "
+                        f"[dim]{escape(msg)}[/dim]",
+                        classes="log-line",
+                    ))
+                    header.update(
+                        "[bold]MiniClaude[/bold]  [red]resume failed — check session id[/red]"
+                    )
+                else:
+                    header.update(f"[bold]MiniClaude[/bold]  [red]subscribe error: {e}[/red]")
                 self._update_welcome("disconnected")
             except asyncio.CancelledError:
                 # pending RPC future 被取消 = 连接在等待响应时断开：按断连处理并继续重连；
@@ -564,12 +668,18 @@ class MiniClaudeTuiApp(App[None]):
                 if prompt is not None:
                     prompt.disabled = True
                     prompt.read_only = False
-                    prompt.border_title = "disconnected, retrying..."
+                    prompt.border_title = (
+                        "resume failed — press Ctrl+Q to quit"
+                        if fatal
+                        else "disconnected, retrying..."
+                    )
 
                 self._reset_session_state()
                 await client.close()
 
             self._update_header("disconnected")
+            if fatal:
+                return
             await asyncio.sleep(2)
 
     # 根据事件 type 路由到对应渲染逻辑；捕获异常防止 socket loop 因单个事件崩溃
@@ -765,51 +875,50 @@ class MiniClaudeTuiApp(App[None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("tool_name", ""))
             param_preview = str(event.get("param_preview", ""))
-            
+
             try:
                 _focused_repr = repr(self.focused)
             except Exception:
                 _focused_repr = "?"
 
             logger.info(
-                "permission.requested tool=%s id=%s  app.focused=%s",
-                tool_name, tool_use_id, _focused_repr,
+                "permission.requested tool=%s id=%s  app.focused=%s  replaying=%s",
+                tool_name, tool_use_id, _focused_repr, self._replaying,
             )
             perm_block = PermissionBlock(tool_use_id, tool_name, param_preview)
             self._pending_permission_blocks[tool_use_id] = perm_block
-            prompt = self._prompt()
+            self._append(perm_block)
 
+            # 回放历史：审批在录制时早已完成，仅渲染为只读记录，
+            # 不弹出交互选择器、不锁输入框，等待后续 granted/denied 事件回填结果
+            if self._replaying:
+                return
+
+            prompt = self._prompt()
             if prompt is not None:
                 prompt.disabled = True
                 prompt.border_title = "permission required"
 
-            self._append(perm_block)
             select = PermissionSelect(tool_use_id)
             self._mount_permission_select(select)
-            logger.debug("PermissionSelect mounted before #prompt  pending=%d", len(self._pending_permission_blocks))
+            logger.debug(
+                "PermissionSelect mounted before #prompt pending=%d",
+                len(self._pending_permission_blocks),
+            )
+
+        elif t == "permission.granted":
+            # 回放时补齐已批准记录；实时决策已由 on_permission_select_decided 处理
+            self._resolve_permission_decision(
+                str(event.get("tool_use_id", "")),
+                str(event.get("decision", "allow_once")),
+            )
 
         elif t == "permission.denied":
-            # 处理超时或断连等非用户交互触发的 deny（用户主动 deny 已由 on_permission_select_decided 处理）
-            tool_use_id = str(event.get("tool_use_id", ""))
-            decision = str(event.get("decision", "denied"))
-            if tool_use_id in self._pending_permission_blocks:
-                perm_block = self._pending_permission_blocks.pop(tool_use_id, None)
-                if perm_block is not None:
-                    perm_block._resolve(decision)
-    
-                try:
-                    select = self.query_one(PermissionSelect)
-                    select.remove()
-                except Exception:
-                    pass
-
-                if not self._pending_permission_blocks:
-                    p = self._prompt()
-                    if p is not None:
-                        p.disabled = False
-                        p.read_only = False
-                        p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                        p.focus()
+            # 处理超时/断连/回放等非用户交互触发的 deny
+            self._resolve_permission_decision(
+                str(event.get("tool_use_id", "")),
+                str(event.get("decision", "deny_once")),
+            )
 
         elif t == "logger.line":
             level = event.get("level", "INFO")
@@ -823,11 +932,21 @@ class MiniClaudeTuiApp(App[None]):
 
 
 # TUI 入口：读取配置并启动 MiniClaudeTuiApp
-def run(config: MiniClaudeConfig, replay_run_id: str | None = None) -> None:
+def run(
+    config: MiniClaudeConfig,
+    replay_run_id: str | None = None,
+    resume_session_id: str | None = None,
+) -> None:
     app = MiniClaudeTuiApp(
         config.host,
         config.port,
         replay_run_id=replay_run_id,
+        resume_session_id=resume_session_id,
         model=config.llm.default_model,
     )
-    app.run()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        app.print_resume_hint()

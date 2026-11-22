@@ -202,6 +202,28 @@ class SessionManager:
             self._store.write_meta(session)
             await self._bus.publish(SessionClosedEvent(session_id=sid, ts=session.updated_at))
 
+    # 恢复已有 session：内存缺失时从磁盘加载；closed 会话重新打开以便继续对话
+    async def resume(self, sid: str) -> Session:
+        if not re.fullmatch(SESSION_ID_PATTERN, sid):
+            raise HandlerError(SESSION_ID_INVALID, "invalid session id format")
+
+        session = self._sessions.get(sid)
+        if session is None:
+            try:
+                session = self._store.read_meta(sid)
+            except (FileNotFoundError, OSError, ValueError) as e:
+                raise HandlerError(SESSION_NOT_FOUND, f"session not found: {sid}") from e
+            self._sessions[sid] = session
+            self._locks.setdefault(sid, asyncio.Lock())
+
+        if session.status == "closed":
+            session.status = "waiting_for_input"
+            session.updated_at = now_iso()
+            self._store.write_meta(session)
+
+        await self._bus.publish(SessionResumedEvent(session_id=sid, ts=now_iso()))
+        return session
+
     # 读取指定 session 的完整 thread 历史
     async def get_history(self, sid: str) -> list[dict[str, Any]]:
         self._get_session(sid)

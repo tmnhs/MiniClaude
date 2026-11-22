@@ -31,6 +31,8 @@ class EventSubscribeCommand(BaseModel):
     topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
     scope: str = "global"      # "global" | "run:<run_id>" | "session:<session_id>"
     replay_from_run: str | None = None  # 设置则先从 events.jsonl 回放历史再接实时流
+    # 设置则按 session 回放该会话所有 run 的 events.jsonl 历史再接实时流
+    replay_from_session: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
 
 class EventSubscribeResult(BaseModel):
     subscription_id: str
@@ -69,6 +71,17 @@ class SessionGetHistoryResult(BaseModel):
     messages: list[dict[str, Any]]
 
 
+class SessionResumeCommand(BaseModel):
+    type: Literal["session.resume"] = "session.resume"
+    session_id: str = Field(pattern=SESSION_ID_PATTERN)
+
+
+class SessionResumeResult(BaseModel):
+    session_id: str
+    status: SessionStatus
+    run_count: int = 0
+
+
 class SessionCloseCommand(BaseModel):
     type: Literal["session.close"] = "session.close"
     session_id: str
@@ -105,6 +118,7 @@ Command = Annotated[
     | SessionCreateCommand
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
+    | SessionResumeCommand
     | SessionCloseCommand
     | PermissionRespondCommand
     | SessionCompactCommand,

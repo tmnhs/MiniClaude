@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
+from mini_claude.core.tools.paths import resolve_within_workspace
 
 _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
-
-from pydantic import BaseModel, ConfigDict, Field
 
 class WriteFileParams(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -19,7 +18,7 @@ class WriteFileTool(BaseTool):
     description = (
         "Write text content to a file, creating it (and any parent directories) if it "
         "does not exist, or overwriting it if it does. "
-        "Path must be relative to the current working directory. "
+        "Path must be relative to the current working directory and may not escape it. "
         "Content size is limited to 1 MB."
     )
     input_schema: dict[str, object] = {
@@ -43,9 +42,8 @@ class WriteFileTool(BaseTool):
         path_str = p.path
         content = p.content
 
-        # 防止目录穿越
-        if ".." in Path(path_str).parts:
-            raise PermissionError(f"path traversal not allowed: {path_str}")
+        # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
+        path = resolve_within_workspace(path_str)
 
         encoded = content.encode("utf-8")
         if len(encoded) > _MAX_BYTES:
@@ -55,7 +53,6 @@ class WriteFileTool(BaseTool):
                 error_type="runtime_error",
             )
 
-        path = Path(path_str)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
