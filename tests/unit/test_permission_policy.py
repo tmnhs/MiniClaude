@@ -98,6 +98,44 @@ def test_deny_wins_over_outside_cwd() -> None:
     assert result == PermissionDecision.DENY
 
 
+# ── AST 增强：引号、变量、解释器内联、选项值 ─────────────────────────────────
+
+# 功能：验证被引号包裹的绝对路径同样触发 OUTSIDE_CWD
+# 设计：旧正则会因路径前是 `"` 而漏检；AST 取 word 原始值后应识别 /etc/passwd
+def test_outside_cwd_detects_quoted_path() -> None:
+    assert matches_outside_cwd('cat "/etc/passwd"')
+
+
+# 功能：验证变量赋值中的绝对路径能被发现
+# 设计：`x=/etc/passwd; cat "$x"` 的路径藏在 assignment 右值里，逐 word 扫描应命中
+def test_outside_cwd_detects_path_in_assignment() -> None:
+    assert matches_outside_cwd('x=/etc/passwd; cat "$x"')
+
+
+# 功能：验证解释器内联代码中的绝对路径不会被漏检
+# 设计：`python -c 'open("/etc/passwd")'` 的字面量是普通 word，需扫描其中的路径片段
+def test_outside_cwd_detects_path_in_inline_code() -> None:
+    assert matches_outside_cwd("python -c 'open(\"/etc/passwd\")'")
+
+
+# 功能：验证 sh -c 内层命令仍会被分析
+# 设计：内联脚本递归解析，`sh -c 'cat /etc/passwd'` 的越界读必须被发现
+def test_outside_cwd_detects_path_in_shell_inline() -> None:
+    assert matches_outside_cwd("sh -c 'cat /etc/passwd'")
+
+
+# 功能：验证选项值中的正则片段不被误判为路径
+# 设计：排除 `--flag=value` 中的 value 后，`git log --grep=/fix` 不应触发 ASK
+def test_option_value_is_not_treated_as_path() -> None:
+    assert not matches_outside_cwd("git log --grep=/fix")
+
+
+# 功能：验证 URL 中的斜杠不被误判为绝对路径
+# 设计：排除冒号前缀，`curl https://example.com/x` 不应因 `//` / `/x` 触发 OUTSIDE_CWD
+def test_url_is_not_treated_as_path() -> None:
+    assert not matches_outside_cwd("curl https://example.com/x")
+
+
 # ── Tier 3: allow_patterns ───────────────────────────────────────────────────
 
 # 功能：验证 allow_patterns 命中时返回 ALLOW（在 OUTSIDE_CWD 未命中的前提下）

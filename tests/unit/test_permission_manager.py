@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -110,8 +111,9 @@ async def test_check_and_wait_deny_once_returns_false() -> None:
 
 # ── always_allow cache ────────────────────────────────────────────────────────
 
-# 功能：验证 respond("always_allow") 后同 session 同工具下次不再发事件
-# 设计：第二次调用 check_and_wait 命中 always 缓存，直接返回 (True, "auto_allow")，emitted 仍为 1 条
+# 功能：验证 respond("always_allow") 后同 session 同一 pattern 下次不再发事件
+# 设计：第二次调用使用同程序名（echo）的命令，命中 pattern 级缓存，返回 (True, "auto_allow")，
+#       emitted 仍为 1 条；证明缓存按 tool + pattern 而非 tool 生效
 async def test_always_allow_skips_future_ask() -> None:
     mgr = _make_manager()
     emitted, emitter = await _collect_emitted()
@@ -130,10 +132,10 @@ async def test_always_allow_skips_future_ask() -> None:
     await task
     assert r1 is True
 
-    # Second call: should hit cache, no new event
+    # Second call: same pattern ("echo") → should hit cache, no new event
     r2, d2 = await mgr.check_and_wait(
         tool_use_id="t5", tool_name="bash",
-        params={"command": "ls"}, session_id="s1",
+        params={"command": "echo again"}, session_id="s1",
         event_emitter=emitter,
     )
 
@@ -195,10 +197,10 @@ async def test_always_deny_skips_future_ask() -> None:
     await task
     assert r1 is False
 
-    # Second call: cache hit → no event, return (False, "auto_deny")
+    # Second call: same pattern ("echo") → cache hit, no event
     r2, d2 = await mgr.check_and_wait(
         tool_use_id="t9", tool_name="bash",
-        params={"command": "ls"}, session_id="s1",
+        params={"command": "echo again"}, session_id="s1",
         event_emitter=emitter,
     )
     assert r2 is False
@@ -353,8 +355,8 @@ async def test_persistent_always_written_and_reloaded(tmp_path: pytest.TempPathF
     assert allowed is True
     assert policy_file.exists()
 
-    loaded = load_policy_file(policy_file)
-    assert loaded.get("bash") == "allow"
+    loaded = {(r.tool, r.pattern): r.decision for r in load_policy_file(policy_file)}
+    assert loaded.get(("bash", "echo")) == "allow"
 
     # 新 manager 加载同一文件，bash 应直接 auto_allow（无 OUTSIDE_CWD）
     mgr2 = PermissionManager(policy_file=policy_file)
@@ -456,3 +458,190 @@ def test_permission_respond_command_requires_session_id() -> None:
         PermissionRespondCommand.model_validate(
             {"type": "permission.respond", "tool_use_id": "t1", "decision": "allow_once"}
         )
+
+
+# ── pattern 级缓存与高风险策略 ───────────────────────────────────────────────
+
+# 功能：验证 always_allow 仅覆盖同一 pattern，git status 的授权不会放行 git log
+# 设计：先对 bash 的 "git status" 设 always_allow，再请求 "git log"；后者 pattern 不同，
+#       仍应发出 permission.requested，证明审批从「工具级」升级为「命令前缀级」
+async def test_always_allow_is_pattern_scoped() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("p1", "always_allow", session_id="s1")
+
+    t1 = asyncio.create_task(_auto_always())
+    allowed1, _ = await mgr.check_and_wait(
+        tool_use_id="p1", tool_name="bash",
+        params={"command": "git status"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t1
+    assert allowed1 is True
+
+    async def _auto_allow_once() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("p2", "allow_once", session_id="s1")
+
+    t2 = asyncio.create_task(_auto_allow_once())
+    allowed2, decision2 = await mgr.check_and_wait(
+        tool_use_id="p2", tool_name="bash",
+        params={"command": "git log"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t2
+
+    assert allowed2 is True
+    assert decision2 == "allow_once"
+    assert len(emitted) == 2
+
+
+# 功能：验证高风险命令的 always_allow 只放行一次，不会写入缓存
+# 设计：rm -rf 命中高风险规则；第一次选择 always_allow 后第二次仍触发 ASK，
+#       证明高风险命令「永不缓存」的用户决策
+async def test_high_risk_always_allow_not_cached() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("h1", "always_allow", session_id="s1")
+
+    t1 = asyncio.create_task(_auto_always())
+    allowed1, _ = await mgr.check_and_wait(
+        tool_use_id="h1", tool_name="bash",
+        params={"command": "rm -rf build"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t1
+    assert allowed1 is True
+
+    async def _auto_allow_once() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("h2", "allow_once", session_id="s1")
+
+    t2 = asyncio.create_task(_auto_allow_once())
+    allowed2, decision2 = await mgr.check_and_wait(
+        tool_use_id="h2", tool_name="bash",
+        params={"command": "rm -rf build"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t2
+
+    assert allowed2 is True
+    assert decision2 == "allow_once"
+    assert len(emitted) == 2
+
+
+# 功能：验证高风险命令的 always_deny 仍然生效（deny 缓存不被 force_ask 跳过）
+# 设计：第一次 always_deny 后第二次同 pattern 直接 auto_deny，不再骚扰用户；
+#       与高风险 allow 永不缓存形成对称
+async def test_high_risk_always_deny_is_cached() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always_deny() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("hd1", "always_deny", session_id="s1")
+
+    t1 = asyncio.create_task(_auto_always_deny())
+    r1, _ = await mgr.check_and_wait(
+        tool_use_id="hd1", tool_name="bash",
+        params={"command": "rm -rf build"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t1
+    assert r1 is False
+
+    r2, d2 = await mgr.check_and_wait(
+        tool_use_id="hd2", tool_name="bash",
+        params={"command": "rm -rf build"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    assert r2 is False
+    assert d2 == "auto_deny"
+    assert len(emitted) == 1
+
+
+# 功能：验证文件工具的 always_allow 以精确路径为粒度，a.txt 的授权不影响 b.txt
+# 设计：write_file 两个不同路径，第一次 always_allow；第二次应再次 ASK，
+#       落实「精确文件路径」的缓存粒度
+async def test_file_tool_always_allow_scoped_to_exact_path(tmp_path: Path) -> None:
+    mgr = PermissionManager(workspace=tmp_path)
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("f1", "always_allow", session_id="s1")
+
+    t1 = asyncio.create_task(_auto_always())
+    r1, _ = await mgr.check_and_wait(
+        tool_use_id="f1", tool_name="write_file",
+        params={"path": "a.txt", "content": "x"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t1
+    assert r1 is True
+
+    async def _auto_allow_once() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("f2", "allow_once", session_id="s1")
+
+    t2 = asyncio.create_task(_auto_allow_once())
+    r2, d2 = await mgr.check_and_wait(
+        tool_use_id="f2", tool_name="write_file",
+        params={"path": "b.txt", "content": "y"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await t2
+
+    assert r2 is True
+    assert d2 == "allow_once"
+    assert len(emitted) == 2
+
+
+# 功能：验证 permission.requested 事件携带 risk_level 与 affected_paths
+# 设计：请求 cat /etc/hosts（越界只读）→ 风险 medium 且路径被收集；用于 TUI/CLI 风险展示
+async def test_permission_event_includes_risk_and_paths() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_allow() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("r1", "allow_once", session_id="s1")
+
+    task = asyncio.create_task(_auto_allow())
+    await mgr.check_and_wait(
+        tool_use_id="r1", tool_name="bash",
+        params={"command": "cat /etc/hosts"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    assert len(emitted) == 1
+    assert emitted[0]["risk_level"] == "medium"
+    assert any("hosts" in p for p in emitted[0]["affected_paths"])
+
+
+# 功能：验证高风险命令在事件中被标记为 high
+# 设计：rm -rf 命中高风险规则；断言事件 risk_level == "high"，供 UI 提示不可缓存
+async def test_high_risk_event_marks_high() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_deny() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("hr", "deny_once", session_id="s1")
+
+    task = asyncio.create_task(_auto_deny())
+    await mgr.check_and_wait(
+        tool_use_id="hr", tool_name="bash",
+        params={"command": "rm -rf /tmp/x"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    assert emitted[0]["risk_level"] == "high"

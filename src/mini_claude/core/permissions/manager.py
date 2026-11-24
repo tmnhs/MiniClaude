@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC
 from pathlib import Path
 from typing import Any
 
+from mini_claude.core.permissions.analysis import analyze_tool
 from mini_claude.core.permissions.policy import (
     DEFAULT_POLICIES,
     PermissionDecision,
     ToolPolicy,
-    matches_outside_cwd,
     param_preview,
 )
 from mini_claude.core.permissions.store import load_policy_file, save_policy_file
@@ -27,8 +25,10 @@ class _PendingRequest:
     future: asyncio.Future[str]
     session_id: str
     tool_name: str
+    pattern: str
+    risk: str
 
-# 管理工具调用权限：策略评估、用户审批挂起、session 级和持久化 always 缓存、超时
+# 管理工具调用权限：策略评估、用户审批挂起、按作用面（tool + pattern）缓存、超时
 class PermissionManager:
     def __init__(
         self,
@@ -36,19 +36,23 @@ class PermissionManager:
         *,
         policy_file: Path | None = None,
         timeout_s: float = 60.0,
+        workspace: Path | None = None,
     ) -> None:
         self._policies: dict[str, ToolPolicy] = policies or dict(DEFAULT_POLICIES)
         # tool_use_id → 待处理的 Future + 元数据
         self._pending: dict[str, _PendingRequest] = {}
-        # (session_id, tool_name) → "allow" | "deny"（session 内存，重启丢失）
-        self._session_always: dict[tuple[str, str], str] = {}
-        # tool_name → "allow" | "deny"（持久化，从 policy_file 加载）
+        # (session_id, tool_name, pattern) → "allow" | "deny"（session 内存，重启丢失）
+        self._session_always: dict[tuple[str, str, str], str] = {}
+        # (tool_name, pattern) → "allow" | "deny"（持久化，从 policy_file 加载）
         self._policy_file = policy_file
-        self._persistent_always: dict[str, str] = (
-            load_policy_file(policy_file) if policy_file is not None else {}
+        self._persistent_always: dict[tuple[str, str], str] = (
+            {(r.tool, r.pattern): r.decision for r in load_policy_file(policy_file)}
+            if policy_file is not None
+            else {}
         )
         # 0 表示不超时
         self._timeout_s = timeout_s
+        self._workspace = (workspace or Path.cwd()).resolve()
 
     # 对工具名 + 参数执行 4 层静态评估，不挂起
     def evaluate(self, tool_name: str, params: dict[str, Any]) -> PermissionDecision:
@@ -67,6 +71,7 @@ class PermissionManager:
     ) -> tuple[bool, str]:
         command = str(params.get("command", "")) if tool_name == "bash" else ""
         policy = self._policies.get(tool_name)
+        analysis = analyze_tool(tool_name, params, self._workspace)
 
         # 第 1 层：deny_patterns（仅 bash，不可被缓存绕过）
         if command and policy:
@@ -75,30 +80,31 @@ class PermissionManager:
                     logger.debug("permission: deny_pattern hit tool=%s", tool_name)
                     return False, "auto_deny"
 
-        # 第 2 层：OUTSIDE_CWD_HEURISTICS（仅 bash，强制 ASK，不可被任何缓存绕过）
-        outside_cwd = bool(command and matches_outside_cwd(command))   
-        
-        if not outside_cwd:
-            # 第 3 层：session 级 always 缓存
-            session_key = (session_id, tool_name)
-            if session_key in self._session_always:
-                cached = self._session_always[session_key]
-                logger.debug("permission: session cache hit tool=%s decision=%s", tool_name, cached)
-                return cached == "allow", f"auto_{cached}"
+        # 第 2 层：缓存（按 tool + pattern）。deny 始终生效；allow 对 outside-cwd / 高风险命令无效。
+        session_key = (session_id, tool_name, analysis.pattern)
+        cached = self._session_always.get(session_key)
+        if cached is None:
+            cached = self._persistent_always.get((tool_name, analysis.pattern))
+        if cached == "deny":
+            logger.debug(
+                "permission: cache deny tool=%s pattern=%s", tool_name, analysis.pattern
+            )
+            return False, "auto_deny"
+        if cached == "allow" and not analysis.force_ask:
+            logger.debug(
+                "permission: cache allow tool=%s pattern=%s", tool_name, analysis.pattern
+            )
+            return True, "auto_allow"
 
-            # 第 4 层：persistent always（跨 session）
-            if tool_name in self._persistent_always:
-                cached = self._persistent_always[tool_name]
-                logger.debug("permission: persistent cache hit tool=%s decision=%s", tool_name, cached)
-                return cached == "allow", f"auto_{cached}"
-
-            # 第 5 层：allow_patterns（仅 bash）
+        # 第 3 层：outside-cwd / 高风险命令强制 ASK，跳过 allow_patterns 与默认放行
+        if not analysis.force_ask:
+            # 第 4 层：allow_patterns（仅 bash）
             if command and policy:
                 for pat in policy.allow_patterns:
                     if re.search(pat, command):
                         return True, "auto_allow"
 
-            # 第 6 层：工具默认策略
+            # 第 5 层：工具默认策略
             if policy is not None:
                 if policy.default == PermissionDecision.ALLOW:
                     return True, "auto_allow"
@@ -106,13 +112,15 @@ class PermissionManager:
                     return False, "auto_deny"
             # default == ASK（bash、未知工具）→ 落入 Future 等待路径
 
-        # ASK 路径（来自 OUTSIDE_CWD 强制 ASK，或 default=ASK）
+        # ASK 路径（来自 outside-cwd / 高风险，或 default=ASK）
         loop = asyncio.get_event_loop()
         future: asyncio.Future[str] = loop.create_future()
         self._pending[tool_use_id] = _PendingRequest(
             future=future,
             session_id=session_id,
             tool_name=tool_name,
+            pattern=analysis.pattern,
+            risk=analysis.risk,
         )
 
         await event_emitter(
@@ -122,6 +130,8 @@ class PermissionManager:
                 "tool_name": tool_name,
                 "params": params,
                 "param_preview": param_preview(tool_name, params),
+                "risk_level": analysis.risk,
+                "affected_paths": list(analysis.affected_paths),
                 "session_id": session_id,
                 "ts": now_iso(),
             }
@@ -132,12 +142,14 @@ class PermissionManager:
                 raw = await asyncio.wait_for(future, timeout=self._timeout_s)
             else:
                 raw = await future
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._pending.pop(tool_use_id, None)
             logger.info("permission: timeout tool_use_id=%s tool=%s", tool_use_id, tool_name)
             return False, "timeout"
 
-        allowed = self._apply_response(raw, session_id, tool_name)
+        allowed = self._apply_response(
+            raw, session_id, tool_name, analysis.pattern, analysis.risk
+        )
         return allowed, raw
 
     # 处理客户端返回的审批决策，校验会话归属后 resolve 对应 Future
@@ -170,45 +182,55 @@ class PermissionManager:
             req.future.set_result(decision)
         return True
 
+    # 写入 session + persistent 缓存并持久化
+    def _cache_decision(
+        self,
+        decision: str,
+        session_id: str,
+        tool_name: str,
+        pattern: str,
+    ) -> None:
+        self._session_always[(session_id, tool_name, pattern)] = decision
+        self._persistent_always[(tool_name, pattern)] = decision
+        logger.info(
+            "permission: always %s tool=%s pattern=%s policy_file=%s",
+            decision, tool_name, pattern, self._policy_file,
+        )
+        if self._policy_file is None:
+            logger.warning("permission: policy_file is None, skipping persistence")
+            return
+
+        try:
+            save_policy_file(self._persistent_always, self._policy_file)
+            logger.info("permission: policy.toml written path=%s", self._policy_file)
+        except Exception:
+            logger.exception(
+                "permission: failed to write policy.toml path=%s", self._policy_file
+            )
+
     # 应用审批决策，更新 session + persistent 缓存，返回是否放行
-    def _apply_response(self, decision: str, session_id: str, tool_name: str) -> bool:
+    # 高风险命令的 always_allow 降级为一次性放行，永不缓存
+    def _apply_response(
+        self,
+        decision: str,
+        session_id: str,
+        tool_name: str,
+        pattern: str,
+        risk: str,
+    ) -> bool:
         allow = decision in ("allow_once", "always_allow")
 
         if decision == "always_allow":
-            self._session_always[(session_id, tool_name)] = "allow"
-            self._persistent_always[tool_name] = "allow"
-
-            logger.info(
-                "permission: always allow tool=%s policy_file=%s persistent=%s",
-                tool_name, self._policy_file, self._persistent_always,
-            )
-
-            if self._policy_file is not None:
-                try:
-                    save_policy_file(self._persistent_always, self._policy_file)
-                    logger.info("permission: policy.toml written path=%s", self._policy_file)
-                except Exception:
-                    logger.exception("permission: failed to write policy.toml path=%s", self._policy_file)
+            if risk == "high":
+                logger.info(
+                    "permission: high-risk always_allow not cached tool=%s pattern=%s",
+                    tool_name, pattern,
+                )
             else:
-                logger.warning("permission: policy_file is None, skipping persistence") 
+                self._cache_decision("allow", session_id, tool_name, pattern)
 
         elif decision == "always_deny":
-            self._session_always[(session_id, tool_name)] = "deny"
-            self._persistent_always[tool_name] = "deny"
-
-            logger.info(
-                "permission: always deny tool=%s policy_file=%s persistent=%s",
-                tool_name, self._policy_file, self._persistent_always,
-            )
-
-            if self._policy_file is not None:
-                try:
-                    save_policy_file(self._persistent_always, self._policy_file)
-                    logger.info("permission: policy.toml written path=%s", self._policy_file)
-                except Exception:
-                    logger.exception("permission: failed to write policy.toml path=%s", self._policy_file)
-            else:
-                logger.warning("permission: policy_file is None, skipping persistence")
+            self._cache_decision("deny", session_id, tool_name, pattern)
 
         return allow
 

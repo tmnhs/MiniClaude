@@ -2089,6 +2089,8 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `tool_name` | `string` | yes |
 | `params` | `object` | yes |
 | `param_preview` | `string` | yes |
+| `risk_level` | `string` | no |
+| `affected_paths` | `array` | no |
 | `session_id` | `string` | yes |
 | `ts` | `string` | yes |
 
@@ -2121,6 +2123,23 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "param_preview": {
       "title": "Param Preview",
       "type": "string"
+    },
+    "risk_level": {
+      "default": "low",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Risk Level",
+      "type": "string"
+    },
+    "affected_paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Affected Paths",
+      "type": "array"
     },
     "session_id": {
       "title": "Session Id",

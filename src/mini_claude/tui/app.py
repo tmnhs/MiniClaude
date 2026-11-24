@@ -46,6 +46,7 @@ class MiniClaudeTuiApp(App[None]):
     TITLE = "MiniClaude TUI"
     BINDINGS = [
         Binding("ctrl+q", "quit", "quit"),
+        Binding("super+c", "copy_last", "copy last", show=False),
     ]
     CSS = """
     Screen { background: $background; }
@@ -200,7 +201,7 @@ class MiniClaudeTuiApp(App[None]):
                 return  # PermissionSelect 有焦点时自行处理，事件不会冒泡到这里
 
             key = event.key
-            decision = PermissionSelect._KEY_MAP.get(key)
+            decision = select._key_map.get(key)
 
             if decision:
                 event.stop()
@@ -208,17 +209,17 @@ class MiniClaudeTuiApp(App[None]):
 
             elif key in ("up", "k"):
                 event.stop()
-                select._cursor = (select._cursor - 1) % len(PermissionSelect._CHOICES)
+                select._cursor = (select._cursor - 1) % len(select._choices)
                 select.update(select._render_ui())
 
             elif key in ("down", "j"):
                 event.stop()
-                select._cursor = (select._cursor + 1) % len(PermissionSelect._CHOICES)
+                select._cursor = (select._cursor + 1) % len(select._choices)
                 select.update(select._render_ui())
 
             elif key == "enter":
                 event.stop()
-                select._pick(PermissionSelect._CHOICES[select._cursor][0])
+                select._pick(select._choices[select._cursor][0])
         except Exception:
             pass
 
@@ -875,6 +876,8 @@ class MiniClaudeTuiApp(App[None]):
             tool_use_id = str(event.get("tool_use_id", ""))
             tool_name = str(event.get("tool_name", ""))
             param_preview = str(event.get("param_preview", ""))
+            risk_level = str(event.get("risk_level", "low"))
+            affected_paths = tuple(str(p) for p in (event.get("affected_paths") or []))
 
             try:
                 _focused_repr = repr(self.focused)
@@ -885,7 +888,9 @@ class MiniClaudeTuiApp(App[None]):
                 "permission.requested tool=%s id=%s  app.focused=%s  replaying=%s",
                 tool_name, tool_use_id, _focused_repr, self._replaying,
             )
-            perm_block = PermissionBlock(tool_use_id, tool_name, param_preview)
+            perm_block = PermissionBlock(
+                tool_use_id, tool_name, param_preview, affected_paths
+            )
             self._pending_permission_blocks[tool_use_id] = perm_block
             self._append(perm_block)
 
@@ -899,7 +904,7 @@ class MiniClaudeTuiApp(App[None]):
                 prompt.disabled = True
                 prompt.border_title = "permission required"
 
-            select = PermissionSelect(tool_use_id)
+            select = PermissionSelect(tool_use_id, risk_level)
             self._mount_permission_select(select)
             logger.debug(
                 "PermissionSelect mounted before #prompt pending=%d",
