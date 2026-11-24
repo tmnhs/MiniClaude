@@ -193,6 +193,15 @@ async def test_missing_api_key_raises_system_exit(monkeypatch: pytest.MonkeyPatc
         AnthropicProvider(model="any")
 
 
+# 功能：验证缺少 ANTHROPIC_BASE_URL 时 provider 初始化同样立即 SystemExit
+# 设计：API key 存在而 base_url 缺失，确认两者都是必填，避免启动后首次请求才失败
+async def test_missing_base_url_raises_system_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    with pytest.raises(SystemExit):
+        AnthropicProvider(model="any")
+
+
 # 功能：验证空流式响应不发布任何 llm.token 事件且 result.text 为空字符串
 # 设计：texts=[] 覆盖零 token 边界条件，确认 text="" 而非 None，避免调用方对空内容做额外 None 判断
 async def test_no_tokens_when_response_is_empty() -> None:

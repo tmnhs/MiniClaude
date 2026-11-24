@@ -145,5 +145,5 @@ async def test_edit_file_registered_and_requires_approval(tmp_path: Path) -> Non
     assert DEFAULT_POLICIES["edit_file"].default is PermissionDecision.ASK
 
     runner = AgentRunner(MiniClaudeConfig(), runs_dir=tmp_path / "runs")
-    registry = runner._build_registry(TaskManager(tmp_path / "tasks"))
+    registry = runner._build_registry(TaskManager(tmp_path / "tasks"), workspace=tmp_path)
     assert registry.get("edit_file") is not None

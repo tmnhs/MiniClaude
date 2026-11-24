@@ -18,7 +18,10 @@ def get_config() -> MiniClaudeConfig:
     config = MiniClaudeConfig()
 
     # .env 必须在读取 MINICLAUDE_CONFIG 之前加载，以便 .env 中的 MINICLAUDE_CONFIG 能影响 TOML 路径
+    # 全局 ~/.mc/.env 作为兜底，使 daemon 从任意 cwd 启动都有 API Key 等配置；
+    # 先加载项目 .env，全局值不覆盖已存在的变量，真实环境变量始终最高优先级
     load_dotenv(".env", override=False)
+    load_dotenv(Path("~/.mc/.env").expanduser(), override=False)
 
     # 若显式指定 MINICLAUDE_CONFIG，只读该文件；否则按优先级叠加：全局 → 项目本地
     explicit = os.environ.get("MINICLAUDE_CONFIG")

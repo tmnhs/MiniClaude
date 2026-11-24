@@ -18,9 +18,9 @@ class AgentProfile:
 class AgentProfileLoader:
     _BUILTIN_DIR = Path(__file__).parent / "builtin"
 
-    # 查找指定角色配置；未找到返回 None
-    def load(self, name: str) -> AgentProfile | None:
-        for path in self._search_paths(name):
+    # 查找指定角色配置；root 为会话工作目录，未找到返回 None
+    def load(self, name: str, root: Path | None = None) -> AgentProfile | None:
+        for path in self._search_paths(name, root):
             if path.exists():
                 try:
                     return self._parse(path, name)
@@ -29,10 +29,10 @@ class AgentProfileLoader:
         return None
 
     # 返回 [项目本地, 用户全局, 内建] 路径；load() 返回第一个存在的，项目本地优先级最高
-    def _search_paths(self, name: str) -> list[Path]:
+    def _search_paths(self, name: str, root: Path | None = None) -> list[Path]:
         builtin = self._BUILTIN_DIR / f"{name}.toml"
         global_ = Path("~/.mc/agents").expanduser() / f"{name}.toml"
-        local = Path(".mc/agents") / f"{name}.toml"
+        local = (root or Path.cwd()) / ".mc/agents" / f"{name}.toml"
         return [local, global_, builtin]
 
     # 解析 TOML 角色配置文件

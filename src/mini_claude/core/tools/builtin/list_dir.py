@@ -43,6 +43,10 @@ class ListDirTool(BaseTool):
         "required": [],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 以树状格式列出目录内容，深度和条数有上限
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = ListDirParams.model_validate(params)
@@ -50,7 +54,8 @@ class ListDirTool(BaseTool):
         max_depth = p.max_depth
 
         # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
-        root = resolve_within_workspace(path_str)
+        workspace = (self._workspace or Path.cwd()).resolve()
+        root = resolve_within_workspace(path_str, workspace)
         if not root.exists():
             raise FileNotFoundError(f"no such directory: {path_str}")
         if not root.is_dir():

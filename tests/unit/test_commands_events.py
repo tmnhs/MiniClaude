@@ -55,9 +55,9 @@ def test_core_started_event_roundtrip() -> None:
 # 功能：验证 session.create 接受客户端预生成的合法 session_id，缺省时保持 None
 # 设计：合法 id 正常解析；不传时默认 None，服务端据此自行生成
 def test_session_create_command_accepts_optional_session_id() -> None:
-    cmd = SessionCreateCommand(session_id="sess-abc123")
+    cmd = SessionCreateCommand(session_id="sess-abc123", workspace="/tmp")
     assert cmd.session_id == "sess-abc123"
-    assert SessionCreateCommand().session_id is None
+    assert SessionCreateCommand(workspace="/tmp").session_id is None
 
 
 # 功能：验证 session.create 拒绝含路径分隔符或非法字符的 session_id
@@ -65,4 +65,4 @@ def test_session_create_command_accepts_optional_session_id() -> None:
 def test_session_create_command_rejects_invalid_session_id() -> None:
     for bad in ["../../etc", "a/b", "", "x" * 65, "sess id"]:
         with pytest.raises(ValidationError):
-            SessionCreateCommand(session_id=bad)
+            SessionCreateCommand(session_id=bad, workspace="/tmp")

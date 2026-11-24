@@ -59,7 +59,7 @@ async def test_run_e2e_reads_file_and_succeeds(
     config.agent.max_steps = 5
 
     runner = AgentRunner(config, runs_dir=runs_dir)
-    await runner.run(goal)
+    await runner.run(goal, workspace=tmp_path)
 
     # ── events.jsonl must exist ──────────────────────────────────────────────
     jsonl_files = list(runs_dir.rglob("events.jsonl"))

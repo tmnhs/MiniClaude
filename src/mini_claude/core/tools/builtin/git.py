@@ -118,10 +118,14 @@ class GitTool(BaseTool):
         "required": ["subcommand"],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 在 workspace 内执行受控 git 子命令，非零退出码或超时映射为工具错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = GitParams.model_validate(params)
-        workspace = Path.cwd().resolve()
+        workspace = (self._workspace or Path.cwd()).resolve()
 
         argv = build_git_argv(p.subcommand, p.args, p.message)
         env = {**os.environ, **_GIT_ENV}

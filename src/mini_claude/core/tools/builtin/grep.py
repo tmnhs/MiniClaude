@@ -213,6 +213,10 @@ class GrepTool(BaseTool):
         "required": ["pattern"],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 在 workspace 内搜索正则命中，优先 rg，缺失时退回 Python 遍历
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = GrepParams.model_validate(params)
@@ -227,7 +231,7 @@ class GrepTool(BaseTool):
                 content=f"invalid regex: {exc}", is_error=True, error_type="schema_error"
             )
 
-        workspace = Path.cwd().resolve()
+        workspace = (self._workspace or Path.cwd()).resolve()
         root = resolve_within_workspace(p.path, workspace)
         if not root.exists():
             raise FileNotFoundError(f"no such path: {p.path}")

@@ -69,10 +69,13 @@ class PermissionManager:
         params: dict[str, Any],
         session_id: str,
         event_emitter: Callable[[dict[str, Any]], Awaitable[None]],
+        workspace: Path | None = None,
     ) -> tuple[bool, str]:
         command = str(params.get("command", "")) if tool_name == "bash" else ""
         policy = self._policies.get(tool_name)
-        analysis = analyze_tool(tool_name, params, self._workspace)
+        # 以会话工作目录为根做 outside-cwd 分析；缺省回退到 manager 构造时的 cwd
+        root = (workspace or self._workspace).resolve()
+        analysis = analyze_tool(tool_name, params, root)
 
         # 第 1 层：deny_patterns（仅 bash，不可被缓存绕过）
         if command and policy:

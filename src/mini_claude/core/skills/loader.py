@@ -69,9 +69,14 @@ def _parse_skill_file(path: Path) -> Skill:
 class SkillLoader:
     _BUILTIN_DIR = Path(__file__).parent / "builtin"
 
+    # 项目本地 skill 目录；root 缺省时按进程 cwd 解析
+    @staticmethod
+    def _local_dir(root: Path | None) -> Path:
+        return (root or Path.cwd()) / ".mc/skills"
+
     # 按优先级查找 skill 文件；未找到返回 None
-    def resolve(self, name: str) -> Skill | None:
-        for path in self._search_paths(name):
+    def resolve(self, name: str, root: Path | None = None) -> Skill | None:
+        for path in self._search_paths(name, root):
             if path.exists():
                 try:
                     return _parse_skill_file(path)
@@ -80,9 +85,9 @@ class SkillLoader:
         return None
 
     # 返回候选路径列表，同时支持扁平文件（name.md）和目录式（name/SKILL.md）两种格式
-    def _search_paths(self, name: str) -> list[Path]:
+    def _search_paths(self, name: str, root: Path | None = None) -> list[Path]:
         dirs = [
-            Path(".mc/skills"),
+            self._local_dir(root),
             Path("~/.mc/skills").expanduser(),
             self._BUILTIN_DIR,
         ]
@@ -94,13 +99,13 @@ class SkillLoader:
         return paths
 
     # 列出所有可用 skill 名称（内建 + 用户全局 + 项目本地，去重后以项目本地覆盖为准）
-    def list_all(self) -> list[str]:
+    def list_all(self, root: Path | None = None) -> list[str]:
         seen: dict[str, None] = {}
 
         for d in [
             self._BUILTIN_DIR,
             Path("~/.mc/skills").expanduser(),
-            Path(".mc/skills"),
+            self._local_dir(root),
         ]:
             if d.exists():
                 for f in sorted(d.glob("*.md")):
@@ -110,13 +115,13 @@ class SkillLoader:
         return list(seen)
 
     # 列出所有可用 Skill 对象（含描述），项目本地覆盖同名内建
-    def list_all_skills(self) -> list[Skill]:
+    def list_all_skills(self, root: Path | None = None) -> list[Skill]:
         seen: dict[str, Skill] = {}
 
         for d in [
             self._BUILTIN_DIR,
             Path("~/.mc/skills").expanduser(),
-            Path(".mc/skills"),
+            self._local_dir(root),
         ]:
             if d.exists():
                 for f in sorted(d.glob("*.md")):

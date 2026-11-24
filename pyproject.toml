@@ -15,6 +15,7 @@ dependencies = [
     "pydantic>=2.0",      # 数据校验与序列化（含 JSON 模型等）
     "python-dotenv>=1.0", # .env 文件解析
     "anthropic>=0.25",     # Anthropic LLM SDK（流式 + prompt caching）
+    "httpx2>=2.0",         # 传输层异常类型（anthropic SDK 底层使用 httpx2）
     "textual>=0.75",
     "bashlex>=0.18",
 ]

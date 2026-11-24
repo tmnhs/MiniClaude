@@ -6,7 +6,8 @@ import os
 from typing import Any
 
 import anthropic
-import httpx
+import httpx2
+
 from mini_claude.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
@@ -34,13 +35,16 @@ def _context_window(model: str) -> int:
     return _MODEL_CONTEXT_WINDOWS.get(model, 200_000)
 
 class AnthropicProvider:
-    # 初始化 Anthropic 客户端；client 可在测试时注入以跳过 API key 检查
+    # 初始化 Anthropic 客户端；client 可在测试时注入以跳过环境变量检查
     def __init__(self, model: str, client: Any = None) -> None:
         if client is None:
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 raise SystemExit("ANTHROPIC_API_KEY not set")
-            self._client: Any = anthropic.AsyncAnthropic(api_key=api_key)
+            base_url = os.environ.get("ANTHROPIC_BASE_URL")
+            if not base_url:
+                raise SystemExit("ANTHROPIC_BASE_URL not set")
+            self._client: Any = anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
         else:
             self._client = client
         self._model = model
@@ -113,7 +117,7 @@ class AnthropicProvider:
                         text_parts.append(text)
                     final_message = await stream.get_final_message()
                 break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as exc:
+            except (httpx2.RemoteProtocolError, httpx2.ReadError, httpx2.ConnectError) as exc:
                 if attempt == _MAX_STREAM_RETRIES:
                     logger.error(
                         "stream failed after %d attempts run_id=%s step=%d: %s",

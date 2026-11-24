@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
@@ -46,6 +48,10 @@ class EditFileTool(BaseTool):
         "required": ["path", "old_string", "new_string"],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 对文件做精确字符串替换；返回替换次数，输入不满足前置条件时返回不可重试错误
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = EditFileParams.model_validate(params)
@@ -57,7 +63,8 @@ class EditFileTool(BaseTool):
             )
 
         # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
-        path = resolve_within_workspace(p.path)
+        workspace = (self._workspace or Path.cwd()).resolve()
+        path = resolve_within_workspace(p.path, workspace)
 
         try:
             original = path.read_text(encoding="utf-8")  # 不存在时抛 FileNotFoundError

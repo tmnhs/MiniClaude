@@ -6,6 +6,7 @@ import logging.handlers
 import os
 from pathlib import Path
 
+from mini_claude.cli.commands.core import ensure_daemon
 from mini_claude.core.conf.config import get_config
 from mini_claude.tui.app import MiniClaudeTuiApp
 
@@ -48,6 +49,8 @@ def main() -> None:
 
     config = get_config()
     _setup_logging(config.logging.level)
+    # 任意目录启动：daemon 未运行则后台拉起（单实例，工作区由会话参数决定）
+    ensure_daemon(config)
     app = MiniClaudeTuiApp(
         config.host,
         config.port,

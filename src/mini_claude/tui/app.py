@@ -607,7 +607,8 @@ class MiniClaudeTuiApp(App[None]):
 
                 if self._resume_session_id is not None:
                     info = await client.send_command(
-                        "session.resume", {"session_id": self._session_id}
+                        "session.resume",
+                        {"session_id": self._session_id, "workspace": os.getcwd()},
                     )
                     run_count = int(info.get("run_count") or 0)
                     logger.info(
@@ -622,7 +623,11 @@ class MiniClaudeTuiApp(App[None]):
                 else:
                     await client.send_command(
                         "session.create",
-                        {"mode": "chat", "session_id": self._session_id},
+                        {
+                            "mode": "chat",
+                            "session_id": self._session_id,
+                            "workspace": os.getcwd(),
+                        },
                     )
                     logger.info("session created session_id=%s", self._session_id)
 

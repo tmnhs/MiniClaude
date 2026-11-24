@@ -29,6 +29,7 @@ class _Runner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        workspace: Path | None = None,
     ) -> RunOutcome:
         assert run_id is not None
         assert session is not None
@@ -54,7 +55,7 @@ async def test_create_session_writes_meta_and_event(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
 
-    session = await manager.create("chat", "title")
+    session = await manager.create("chat", workspace=str(tmp_path), title="title")
 
     assert session.status == "active"
     assert store.read_meta(session.id).title == "title"
@@ -66,7 +67,7 @@ async def test_create_session_writes_meta_and_event(tmp_path: Path) -> None:
 async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
-    session = await manager.create("chat")
+    session = await manager.create("chat", workspace=str(tmp_path))
 
     run_id = await manager.send_message(session.id, "hello")
 
@@ -83,7 +84,7 @@ async def test_send_message_chat_enters_waiting_and_writes_thread(tmp_path: Path
 async def test_one_shot_auto_closes(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
-    session = await manager.create("one_shot")
+    session = await manager.create("one_shot", workspace=str(tmp_path))
 
     await manager.send_message(session.id, "hello")
 
@@ -104,7 +105,7 @@ async def test_missing_session_raises_handler_error(tmp_path: Path) -> None:
 async def test_closed_session_rejects_message(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
-    session = await manager.create("chat")
+    session = await manager.create("chat", workspace=str(tmp_path))
     await manager.close(session.id)
 
     with pytest.raises(HandlerError) as exc:
@@ -118,7 +119,7 @@ async def test_create_uses_client_provided_session_id(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
 
-    session = await manager.create("chat", session_id="sess-client")
+    session = await manager.create("chat", workspace=str(tmp_path), session_id="sess-client")
 
     assert session.id == "sess-client"
     assert store.read_meta("sess-client").id == "sess-client"
@@ -128,10 +129,10 @@ async def test_create_uses_client_provided_session_id(tmp_path: Path) -> None:
 # 设计：同一 id 创建两次，断言错误码为 SESSION_ID_CONFLICT
 async def test_create_duplicate_session_id_raises(tmp_path: Path) -> None:
     manager = SessionManager(SessionStore(tmp_path), lambda: _Runner(), EventBus())  # type: ignore[arg-type]
-    await manager.create("chat", session_id="sess-dup")
+    await manager.create("chat", workspace=str(tmp_path), session_id="sess-dup")
 
     with pytest.raises(HandlerError) as exc:
-        await manager.create("chat", session_id="sess-dup")
+        await manager.create("chat", workspace=str(tmp_path), session_id="sess-dup")
     assert exc.value.code == SESSION_ID_CONFLICT
 
 
@@ -142,7 +143,7 @@ async def test_create_rejects_invalid_session_id(tmp_path: Path) -> None:
     manager = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
 
     with pytest.raises(HandlerError) as exc:
-        await manager.create("chat", session_id="../../escape")
+        await manager.create("chat", workspace=str(tmp_path), session_id="../../escape")
     assert exc.value.code == SESSION_ID_INVALID
     assert not (tmp_path.parent / "escape").exists()
 
@@ -153,7 +154,7 @@ async def test_create_rejects_invalid_session_id(tmp_path: Path) -> None:
 async def test_resume_loads_closed_session_from_disk(tmp_path: Path) -> None:
     store = SessionStore(tmp_path)
     first = SessionManager(store, lambda: _Runner(), EventBus())  # type: ignore[arg-type]
-    session = await first.create("chat")
+    session = await first.create("chat", workspace=str(tmp_path))
     await first.send_message(session.id, "hello")
     await first.close(session.id)
     assert store.read_meta(session.id).status == "closed"
@@ -198,7 +199,7 @@ async def test_resume_publishes_resumed_event(tmp_path: Path) -> None:
     bus.subscribe(collect)
     store = SessionStore(tmp_path)
     first = SessionManager(store, lambda: _Runner(), bus)  # type: ignore[arg-type]
-    session = await first.create("chat")
+    session = await first.create("chat", workspace=str(tmp_path))
     await first.close(session.id)
     events.clear()
 

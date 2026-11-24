@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import time
 from typing import Any
 
 from pydantic import BaseModel
 
+from mini_claude.cli.commands.core import ensure_daemon
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.runner import AgentRunner
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
@@ -98,7 +100,9 @@ async def _run_async(goal: str, config: MiniClaudeConfig) -> int:
                 "scope": "global",
             },
         )
-        await client.send_command("agent.run", {"goal": goal})
+        await client.send_command(
+            "agent.run", {"goal": goal, "workspace": os.getcwd()}
+        )
     except IpcError as e:
         print(f"error: {e}", file=sys.stderr)
         loop_task.cancel()
@@ -119,6 +123,7 @@ async def _run_async(goal: str, config: MiniClaudeConfig) -> int:
 
 # 执行 mc run --goal "..." 命令
 def cmd_run(goal : str, config : MiniClaudeConfig) -> None:
+    ensure_daemon(config)
     try:
         exit_code = asyncio.run(_run_async(goal, config))
     except KeyboardInterrupt:

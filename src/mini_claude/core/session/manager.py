@@ -5,6 +5,7 @@ import re
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from mini_claude.core.bus.envelope import HandlerError
@@ -16,6 +17,7 @@ from mini_claude.core.session.store import SessionStore
 from mini_claude.core.skills.loader import SkillLoader
 from mini_claude.core.utils.runs_dir import new_run_id
 from mini_claude.core.utils.time import now_iso
+from mini_claude.core.workspace import INVALID_WORKSPACE, normalize_workspace
 
 if TYPE_CHECKING:
     from mini_claude.core.runner import AgentRunner
@@ -47,6 +49,8 @@ class SessionManager:
     async def create(
         self,
         mode: SessionMode,
+        *,
+        workspace: str,
         title: str = "",
         session_id: str | None = None,
     ) -> Session:
@@ -65,6 +69,7 @@ class SessionManager:
             created_at=ts,
             updated_at=ts,
             run_ids=[],
+            workspace=str(normalize_workspace(workspace)),
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
@@ -83,6 +88,10 @@ class SessionManager:
         async with lock:
             if session.status == "closed":
                 raise HandlerError(SESSION_CLOSED, "session already closed")
+
+            if not session.workspace:
+                raise HandlerError(INVALID_WORKSPACE, f"session has no workspace: {sid}")
+            workspace = Path(session.workspace)
 
             if session.status == "waiting_for_input":
                 await self._bus.publish(SessionResumedEvent(session_id=sid, ts=now_iso()))
@@ -109,7 +118,7 @@ class SessionManager:
                 parts = content[1:].split(None, 1)
                 skill_name = parts[0]
                 arguments = parts[1] if len(parts) > 1 else ""
-                skill = self._skill_loader.resolve(skill_name)
+                skill = self._skill_loader.resolve(skill_name, root=workspace)
 
                 if skill is not None:
                     goal = self._skill_loader.render_prompt(skill, arguments)
@@ -134,6 +143,7 @@ class SessionManager:
                 store=self._store,
                 system_prompt_override=system_prompt_override,
                 tool_whitelist=tool_whitelist,
+                workspace=workspace,
             )
 
             session.updated_at = now_iso()
@@ -216,6 +226,9 @@ class SessionManager:
             self._sessions[sid] = session
             self._locks.setdefault(sid, asyncio.Lock())
 
+        if not session.workspace:
+                raise HandlerError(INVALID_WORKSPACE, f"session has no workspace: {sid}")
+        
         if session.status == "closed":
             session.status = "waiting_for_input"
             session.updated_at = now_iso()

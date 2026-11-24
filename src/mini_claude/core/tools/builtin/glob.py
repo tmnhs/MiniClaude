@@ -102,11 +102,15 @@ class GlobTool(BaseTool):
         "required": ["pattern"],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 在 workspace 内按 glob 匹配文件，返回排序后的相对路径
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = GlobParams.model_validate(params)
 
-        workspace = Path.cwd().resolve()
+        workspace = (self._workspace or Path.cwd()).resolve()
         root = resolve_within_workspace(p.path, workspace)
         if not root.exists():
             raise FileNotFoundError(f"no such directory: {p.path}")

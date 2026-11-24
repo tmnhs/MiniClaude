@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel, ConfigDict
 
 from mini_claude.core.tools.base import BaseTool, ToolResult
@@ -35,6 +37,10 @@ class WriteFileTool(BaseTool):
         "required": ["path", "content"],
     }
 
+    # workspace 由 runner / spawn_agent 注入；直接构造时回退到进程 cwd
+    def __init__(self, workspace: Path | None = None) -> None:
+        self._workspace = workspace
+
     # 写入文件内容；超 1MB 拒绝；禁止 .. 路径遍历；自动创建父目录
     async def invoke(self, params: dict[str, object]) -> ToolResult:
         p = WriteFileParams.model_validate(params)
@@ -42,7 +48,8 @@ class WriteFileTool(BaseTool):
         content = p.content
 
         # 解析并校验路径：拒绝绝对路径、`..` 穿越与 symlink 逃逸
-        path = resolve_within_workspace(path_str)
+        workspace = (self._workspace or Path.cwd()).resolve()
+        path = resolve_within_workspace(path_str, workspace)
 
         encoded = content.encode("utf-8")
         if len(encoded) > MAX_WRITE_BYTES:
