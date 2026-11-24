@@ -18,6 +18,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Label, Static
@@ -57,6 +58,16 @@ class MiniClaudeTuiApp(App[None]):
         color: $text;
         padding: 0 1;
     }
+    #header-left {
+        width: 1fr;
+        height: 1;
+        text-overflow: ellipsis;
+    }
+    #header-right {
+        width: auto;
+        height: 1;
+        content-align: right middle;
+    }
     #log-view {
         height: 1fr;
         scrollbar-size-vertical: 1;
@@ -88,6 +99,11 @@ class MiniClaudeTuiApp(App[None]):
         "resume_failed": ("恢复失败", "red"),
     }
 
+    # 运行中 spinner 帧，顶栏每秒轮换一帧，表示 agent 仍在工作
+    _SPINNER: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    # 顶栏上下文占用进度条的格数
+    _CTX_CELLS = 8
+
     # 输入框状态 → (是否可编辑, 边框提示)
     _PROMPT_STATES: dict[str, tuple[bool, str]] = {
         "ready": (True, "输入消息，或键入 / 浏览命令  ·  Enter 发送  ·  Shift+Enter 换行"),
@@ -101,19 +117,19 @@ class MiniClaudeTuiApp(App[None]):
 
     # 欢迎面板顶部的 "MINICLAUDE" 方块字形（5 行等高，整体宽 55 列）
     _LOGO_ROWS: tuple[str, ...] = (
-        "█   █ ███ █   █ ███  ████ █       █   █   █ ████  █████",
+        "█   █ ███ █   █ ███ ████  █       █   █   █ ████  █████",
         "██ ██  █  ██  █  █  █     █      █ █  █   █ █   █ █    ",
         "█ █ █  █  █ █ █  █  █     █     █████ █   █ █   █ ████ ",
         "█   █  █  █  ██  █  █     █     █   █ █   █ █   █ █    ",
-        "█   █ ███ █   █ ███  ████ █████ █   █  ███  ████  █████",
+        "█   █ ███ █   █ ███ ████  █████ █   █  ███  ████  █████",
     )
-    # 字形自顶向下的青→蓝渐变
+    # 字形自顶向下的青→蓝五档渐变
     _LOGO_STYLES: tuple[str, ...] = (
-        "bold bright_cyan",
-        "bold bright_cyan",
-        "bold cyan",
-        "bold cyan",
-        "bold #00afaf",
+        "bold #7ae7f7",
+        "bold #3fd7ec",
+        "bold #17c3e0",
+        "bold #0aa9cb",
+        "bold #0b8fb0",
     )
 
     # 初始化连接参数和 TUI 内部状态
@@ -145,6 +161,7 @@ class MiniClaudeTuiApp(App[None]):
         self._run_started_at: float | None = None
         self._current_step = 0
         self._header_state = "connecting"
+        self._spinner_index = 0
         # 最近一次使用的 session_id：连接断开也不清空，用于退出时提示 --resume
         self._last_session_id: str | None = resume_session_id
         # 是否正在回放历史事件：回放期间的审批记录只读，不弹出交互选择器
@@ -153,9 +170,13 @@ class MiniClaudeTuiApp(App[None]):
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
-     # 构建 UI：顶部状态栏 + 可滚动事件日志 + 新输出提示 + 输入框
+     # 构建 UI：顶部状态栏（左右分栏）+ 可滚动事件日志 + 新输出提示 + 输入框
     def compose(self) -> ComposeResult:
-        yield Label("[bold]MiniClaude[/bold]  [dim]正在连接…[/dim]", id="header")
+        yield Horizontal(
+            Label(self._header_left_markup(), id="header-left"),
+            Label(self._header_right_markup(), id="header-right"),
+            id="header",
+        )
         yield LogView(id="log-view")
         yield Label("有新输出 ↓", id="new-output")
         yield ChatTextArea(
@@ -169,6 +190,7 @@ class MiniClaudeTuiApp(App[None]):
         self._slash_items = self._build_slash_items()
         self._welcome = Static(self._render_welcome("connecting"), id="welcome")
         self._append(self._welcome)
+        self._refresh_header()
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
         self._set_prompt_state("connecting")
         # 运行中定时刷新顶栏的耗时/step 信息
@@ -536,8 +558,10 @@ class MiniClaudeTuiApp(App[None]):
         if enabled and focus:
             target.focus()
 
-    # 运行中每秒刷新顶栏，更新耗时显示
+    # 运行中每秒推进 spinner 帧并刷新顶栏，更新耗时显示
     def _refresh_header_clock(self) -> None:
+        if self._run_started_at is not None:
+            self._spinner_index += 1
         if self._busy or self._run_started_at is not None:
             self._refresh_header()
 
@@ -547,42 +571,60 @@ class MiniClaudeTuiApp(App[None]):
         self._update_welcome(state)
         self._refresh_header()
 
-    # 顶栏文案：连接状态 + 会话 + 运行中的 step/耗时 + ctx 占用
-    def _header_markup(self) -> str:
-        label, color = self._STATE_STYLE.get(self._header_state, (self._header_state, "dim"))
-        parts = [
-            "[bold]MiniClaude[/bold]",
-            f"[dim]{self._host}:{self._port}[/dim]",
-        ]
+    # 顶栏状态徽章：圆点 + 彩色背景块，颜色随连接/运行状态变化
+    def _status_badge(self) -> str:
+        label, color = self._STATE_STYLE.get(
+            self._header_state, (self._header_state, "dim")
+        )
+        if color == "dim":
+            return f"[dim]{label}[/dim]"
+        return f"[bold black on {color}] ● {label} [/]"
+
+    # 顶栏左半：品牌 + 状态徽章 + 会话（地址已在欢迎面板展示，窄屏优先截断此段）
+    def _header_left_markup(self) -> str:
+        parts = ["[bold]MiniClaude[/bold]", self._status_badge()]
         if self._session_id:
             parts.append(f"[dim]{self._session_id}[/dim]")
-        parts.append(f"[{color}]{label}[/{color}]")
-
-        if self._run_started_at is not None:
-            elapsed = time.monotonic() - self._run_started_at
-            parts.append(f"[dim]step {self._current_step} · {elapsed:.1f}s[/dim]")
-
-        if self._last_context_pct > 0:
-            pct = self._last_context_pct
-            if pct >= 0.85:
-                ctx_color = "bold red"
-            elif pct >= 0.70:
-                ctx_color = "yellow"
-            else:
-                ctx_color = "dim"
-            parts.append(f"[{ctx_color}]ctx {pct * 100:.0f}%[/{ctx_color}]")
-        elif self._model:
-            parts.append(f"[dim]{self._model}[/dim]")
-
         return "  ".join(parts)
 
-    # 将顶栏文案写入 Label；未挂载时静默跳过
+    # 顶栏右半：运行中 spinner/step/耗时 + 上下文迷你进度条（或模型名）
+    def _header_right_markup(self) -> str:
+        parts: list[str] = []
+        if self._run_started_at is not None:
+            elapsed = time.monotonic() - self._run_started_at
+            spinner = self._SPINNER[self._spinner_index % len(self._SPINNER)]
+            parts.append(
+                f"[yellow]{spinner}[/yellow] "
+                f"[dim]step {self._current_step} · {elapsed:.1f}s[/dim]"
+            )
+        if self._last_context_pct > 0:
+            parts.append(self._ctx_gauge(self._last_context_pct))
+        elif self._model:
+            parts.append(f"[dim]{self._model}[/dim]")
+        return "   ".join(parts)
+
+    # 顶栏用 8 格迷你进度条展示上下文占用；70%/85% 分档着色
+    @classmethod
+    def _ctx_gauge(cls, pct: float) -> str:
+        filled = round(max(0.0, min(pct, 1.0)) * cls._CTX_CELLS)
+        bar = "▓" * filled + "░" * (cls._CTX_CELLS - filled)
+        if pct >= 0.85:
+            color = "bold red"
+        elif pct >= 0.70:
+            color = "yellow"
+        else:
+            color = "dim"
+        return f"[{color}]{bar} {pct * 100:.0f}%[/{color}]"
+
+    # 将左右两段顶栏文案写入 Label；未挂载时静默跳过
     def _refresh_header(self) -> None:
         try:
-            header = self.query_one("#header", Label)
+            left = self.query_one("#header-left", Label)
+            right = self.query_one("#header-right", Label)
         except Exception:  # NoMatches / ScreenStackError（App 未挂载）
             return
-        header.update(self._header_markup())
+        left.update(self._header_left_markup())
+        right.update(self._header_right_markup())
 
     # 将最新连接状态同步到欢迎面板；未挂载时静默跳过
     def _update_welcome(self, state: str) -> None:

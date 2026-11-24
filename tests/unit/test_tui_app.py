@@ -258,8 +258,9 @@ def test_run_finished_cancelled_resets_state() -> None:
     assert "已中断" in widgets[0].content
 
 
-# 功能：验证顶栏在运行中展示 step/耗时，并按上下文占用率着色
-# 设计：直接设置状态字段后调用 _header_markup，覆盖高占用（bold red）分支
+# 功能：验证左半顶栏含状态徽章与会话信息，右半含 step/耗时和上下文进度条
+# 设计：直接设置状态字段后分别取左右 markup，覆盖运行态与高占用（bold red）分支；
+#       同时断言模型名在无上下文占用时作为右半回退显示
 def test_header_markup_includes_step_and_context() -> None:
     app = MiniClaudeTuiApp("127.0.0.1", 9999, model="m")
     app._session_id = "sess-A"
@@ -268,13 +269,64 @@ def test_header_markup_includes_step_and_context() -> None:
     app._current_step = 3  # type: ignore[attr-defined]
     app._last_context_pct = 0.9  # type: ignore[attr-defined]
 
-    markup = app._header_markup()
+    left = app._header_left_markup()
+    right = app._header_right_markup()
 
-    assert "运行中" in markup
-    assert "sess-A" in markup
-    assert "step 3" in markup
-    assert "ctx 90%" in markup
-    assert "bold red" in markup
+    assert "运行中" in left
+    assert "on yellow" in left  # 运行态徽章使用黄底
+    assert "sess-A" in left
+    assert "step 3" in right
+    assert "90%" in right
+    assert "bold red" in right
+    assert "▓" * 7 + "░" in right  # 90% 对应 8 格中的 7 格
+
+    # 无上下文占用时右半回退为模型名（运行中仍在前面保留 step/耗时）
+    app._last_context_pct = 0.0  # type: ignore[attr-defined]
+    assert app._header_right_markup().endswith("[dim]m[/dim]")
+
+
+# 功能：验证上下文进度条按占用率分档着色与填充格数
+# 设计：抽查 0%/50%/75%/100% 四档，断言格数、百分比与颜色标记
+def test_ctx_gauge_thresholds() -> None:
+    assert "░░░░░░░░" in MiniClaudeTuiApp._ctx_gauge(0.0)
+    assert "dim" in MiniClaudeTuiApp._ctx_gauge(0.5)
+
+    mid = MiniClaudeTuiApp._ctx_gauge(0.75)
+    assert "▓" * 6 + "░" * 2 in mid
+    assert "yellow" in mid
+
+    full = MiniClaudeTuiApp._ctx_gauge(1.0)
+    assert "▓" * 8 in full
+    assert "bold red" in full
+
+
+# 功能：验证方块字 logo 每行等宽、行数与渐变色数一致
+# 设计：字形是手工对齐的 ASCII art，行宽不一致会在面板中错位，故用断言锁定
+def test_logo_rows_are_uniform_width() -> None:
+    rows = MiniClaudeTuiApp._LOGO_ROWS
+    styles = MiniClaudeTuiApp._LOGO_STYLES
+
+    assert len(rows) == len(styles) == 5
+    assert len({len(row) for row in rows}) == 1
+
+
+# 功能：验证运行中每秒推进 spinner 帧，空闲时不推进
+# 设计：设置运行起始时间后连续调用两次 _refresh_header_clock，断言帧索引递增；
+#       再清空运行态，断言索引保持不变
+def test_refresh_header_clock_advances_spinner_only_when_running() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._busy = True
+    app._run_started_at = time.monotonic()  # type: ignore[attr-defined]
+
+    app._refresh_header_clock()
+    first = app._spinner_index  # type: ignore[attr-defined]
+    app._refresh_header_clock()
+    assert app._spinner_index == first + 1  # type: ignore[attr-defined]
+
+    app._busy = False
+    app._run_started_at = None  # type: ignore[attr-defined]
+    app._refresh_header_clock()
+    assert app._spinner_index == first + 1  # type: ignore[attr-defined]
 
 
 # 功能：验证空闲时 Esc 不触发中断，避免无谓的 RPC
