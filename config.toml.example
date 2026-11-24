@@ -5,46 +5,67 @@
 #   项目级：mkdir -p .mc && cp config.toml.example .mc/config.toml
 #
 # 加载顺序（后者覆盖前者）：内置默认值 → ~/.mc/config.toml → ./.mc/config.toml
+# 若设置了环境变量 MINICLAUDE_CONFIG，则只读取该文件，不再叠加上述两个默认路径。
 # 环境变量 MINICLAUDE_* 优先级最高，可覆盖此处对应字段（见 .env.example）。
-# 注意：出现未知顶层小节或未知键会直接报错退出。
+# 注意：出现未知顶层小节、未知键或类型错误会直接报错退出。
+#
+# 下面所有小节和字段都可以省略；省略即使用括号内标注的默认值。
 
+# ── Core Daemon ───────────────────────────────────────────────
+# mc-core 守护进程监听的 TCP loopback 地址，CLI/TUI 通过它通信。
 [core]
-host = "127.0.0.1"
-port = 10721
+host = "127.0.0.1"            # 监听地址；一般保持 loopback，避免对外暴露
+port = 10721                  # 监听端口；需与客户端 MINICLAUDE_PORT 一致
 
+# ── Logging（mc-core daemon） ─────────────────────────────────
+# daemon 自身的日志输出配置（TUI 日志另行由 MINICLAUDE_TUI_LOG_FILE 控制）。
 [logging]
 level = "INFO"                # DEBUG | INFO | WARNING | ERROR
-file = "~/.mc/logs/core.log"  # 留空字符串 "" 则仅输出 stderr
-format = "text"               # text | json
+file = "~/.mc/logs/core.log"  # 滚动日志文件；留空字符串 "" 则仅输出 stderr
+format = "text"               # text（键值对，便于人工阅读）| json（结构化，便于日志聚合）
 
+# ── Agent ─────────────────────────────────────────────────────
 [agent]
-max_steps = 20                # 单次 run 的最大 agent 步数（正整数）
+max_steps = 50                # 单次 run 的最大 agent 步数（正整数）；超出后该 run 终止
 
+# ── LLM ───────────────────────────────────────────────────────
+# API Key 与端点不在本文件中配置，而是通过环境变量 ANTHROPIC_API_KEY /
+# ANTHROPIC_BASE_URL 提供（见 .env.example），二者均为必填。
 [llm]
-default_model = "claude-sonnet-4-6"
-router = "static"             # static | rule_based | cost_budget
+default_model = "claude-sonnet-4-6"  # 默认模型名；可被 MINICLAUDE_LLM_DEFAULT_MODEL 覆盖
+router = "static"                    # 模型路由策略：static | rule_based | cost_budget
 
+# ── Trace ─────────────────────────────────────────────────────
+# 将 agent / LLM 事件以 JSONL 形式落盘，便于回放与调试。
 [trace]
-enabled = false
-file = "~/.mc/logs/trace.jsonl"
+enabled = false               # 是否开启 trace
+file = "~/.mc/logs/trace.jsonl"  # trace 输出文件
 include_llm_payload = false   # 是否记录完整 LLM 请求/响应（体积大且可能含敏感内容）
 
+# ── Permission ────────────────────────────────────────────────
+# 工具调用权限审批（如写文件、执行命令）的超时控制。
 [permission]
-timeout_s = 60.0              # 权限审批超时秒数；0 表示不超时
+timeout_s = 60.0              # 审批等待超时秒数（非负数）；0 表示永不超时
 
+# ── Compaction（上下文压缩） ──────────────────────────────────
+# 控制历史上下文过快膨胀时的截断与自动压缩行为。
 [compaction]
-auto_threshold = 0.0          # context 使用率阈值（0~1）；0 表示禁用自动压缩
-tool_result_limit = 8000      # 单个 tool_result 超过该字符数时截断
-tool_result_keep = 4000       # 截断后保留的前缀字符数
+auto_threshold = 0.0          # context 使用率阈值（0~1）；0 表示禁用自动压缩（推荐手动 /compact）
+tool_result_limit = 8000      # 单个 tool_result 超过该字符数时触发截断（正整数）
+tool_result_keep = 4000       # 截断后保留的前缀字符数（正整数）
 
+# ── Sandbox ───────────────────────────────────────────────────
+# Bash 工具的系统级隔离模式；路径列表用于放行工作区/家目录之外的例外目录。
 [sandbox]
-mode = "workspace"            # off | workspace | strict
-allow_write = []              # workspace 外额外可写路径
-allow_read = []               # 家目录外额外可读路径
+mode = "workspace"                                                 # off（不隔离）| workspace（写操作限定在工作区）| strict（workspace + 禁止网络）
+allow_read = ["~/.local/share/uv", "~/.cache/uv", "~/.gitconfig"]  # 工作区外额外可读路径（数组，支持 ~ 展开）
+allow_write = ["~/.cache/uv"]                                      # 工作区外额外可写路径（数组，支持 ~ 展开）
 
 # ── MCP 服务器（可选） ────────────────────────────────────────
 # servers 为数组表（[[mcp.servers]]），可配置多个；取消注释以启用。
-# stdio 传输需要 command；tcp 传输需要 host / port。
+# 每个服务器必须有唯一的 name；transport 默认为 "stdio"。
+#   stdio：需要 command（可执行文件），args / env 可选，用于通过子进程启动 MCP server。
+#   tcp：  需要 host / port，用于连接已在运行的 MCP server。
 #
 # [[mcp.servers]]
 # name = "filesystem"
