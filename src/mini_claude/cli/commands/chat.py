@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 import uuid
 from typing import Any
 
+from mini_claude.cli.commands.core import ensure_daemon
 from mini_claude.core.conf.config import MiniClaudeConfig
 from mini_claude.core.transport.socket_client import IpcError, SocketClient
 
@@ -118,7 +120,8 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
             },
         )
         await client.send_command(
-            "session.create", {"mode": "chat", "session_id": session_id}
+            "session.create",
+            {"mode": "chat", "session_id": session_id, "workspace": os.getcwd()},
         )
         print(f"[session: {session_id}]")
 
@@ -182,6 +185,7 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
 
 # 执行 mc chat 命令
 def cmd_chat(config: MiniClaudeConfig) -> None:
+    ensure_daemon(config)
     try:
         exit_code = asyncio.run(_chat_async(config))
     except KeyboardInterrupt:

@@ -93,6 +93,7 @@ class SpawnAgentTool(BaseTool):
         session_id: str,
         depth: int = 0,
         sandbox: SandboxConfig | None = None,
+        workspace: Path | None = None,
     ) -> None:
         self._provider = provider
         self._parent_bus = parent_bus
@@ -104,6 +105,7 @@ class SpawnAgentTool(BaseTool):
         self._session_id = session_id
         self._depth = depth
         self._sandbox = sandbox
+        self._workspace = (workspace or Path.cwd()).resolve()
 
     # 派生子 agent，前台时阻塞直到完成并返回结果，后台时立即返回 run_id
     async def invoke(self, params: dict[str, object]) -> ToolResult:
@@ -118,7 +120,7 @@ class SpawnAgentTool(BaseTool):
 
         profile: AgentProfile | None = None
         if p.subagent_type:
-            profile = _profile_loader.load(p.subagent_type)
+            profile = _profile_loader.load(p.subagent_type, root=self._workspace)
 
         child_run_id = new_run_id()
         child_ctx = ExecutionContext(
@@ -147,6 +149,7 @@ class SpawnAgentTool(BaseTool):
             child_bus,
             permission_manager=self._permission_manager,
             session_id=self._session_id,
+            workspace=self._workspace,
         )
 
         await self._parent_bus.publish(
@@ -245,14 +248,14 @@ class SpawnAgentTool(BaseTool):
 
         registry = ToolRegistry()
         _all_tools = [
-            ReadFileTool(),
-            BashTool(sandbox=self._sandbox),
-            WriteFileTool(),
-            EditFileTool(),
-            ListDirTool(),
-            GrepTool(),
-            GlobTool(),
-            GitTool(),
+            ReadFileTool(workspace=self._workspace),
+            BashTool(sandbox=self._sandbox, workspace=self._workspace),
+            WriteFileTool(workspace=self._workspace),
+            EditFileTool(workspace=self._workspace),
+            ListDirTool(workspace=self._workspace),
+            GrepTool(workspace=self._workspace),
+            GlobTool(workspace=self._workspace),
+            GitTool(workspace=self._workspace),
         ]
         for t in _all_tools:
             if _allowed(t.name):
@@ -280,6 +283,7 @@ class SpawnAgentTool(BaseTool):
                 session_id=self._session_id,
                 depth=self._depth + 1,
                 sandbox=self._sandbox,
+                workspace=self._workspace,
             )
 
             if _allowed("spawn_agent"):

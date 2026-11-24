@@ -51,6 +51,7 @@ from mini_claude.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from mini_claude.core.transport.socket_server import SocketServer, get_connection_writer
 from mini_claude.core.utils.runs_dir import events_file, new_run_id
 from mini_claude.core.utils.time import now_iso
+from mini_claude.core.workspace import normalize_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,9 @@ class CoreApp():
         assert self._sessions is not None
 
         cmd = AgentRunCommand.model_validate(params)
-        session = await self._sessions.create(mode="one_shot", title=cmd.goal[:40])
+        session = await self._sessions.create(
+            mode="one_shot", title=cmd.goal[:40], workspace=cmd.workspace
+        )
 
         run_id = new_run_id()
         run_task = asyncio.create_task(
@@ -141,7 +144,10 @@ class CoreApp():
         assert self._sessions is not None
         cmd = SessionCreateCommand.model_validate(params)
         session = await self._sessions.create(
-            mode=cmd.mode, title=cmd.title, session_id=cmd.session_id
+            mode=cmd.mode,
+            title=cmd.title,
+            session_id=cmd.session_id,
+            workspace=cmd.workspace,
         )
         return SessionCreateResult(session_id=session.id, status=session.status)
 
@@ -164,10 +170,20 @@ class CoreApp():
         assert self._sessions is not None
         cmd = SessionResumeCommand.model_validate(params)
         session = await self._sessions.resume(cmd.session_id)
+
+        # 客户端当前目录与会话记录的工作目录不一致时提示：恢复后仍以记录值为准
+        requested = normalize_workspace(cmd.workspace)
+        if requested != Path(session.workspace):
+            logger.warning(
+                "session.resume workspace mismatch session_id=%s recorded=%s requested=%s",
+                cmd.session_id, session.workspace, requested,
+            )
+
         return SessionResumeResult(
             session_id=session.id,
             status=session.status,
             run_count=len(session.run_ids),
+            workspace=session.workspace,
         )
 
     # 接收客户端权限审批响应，resolve 对应挂起的 Future

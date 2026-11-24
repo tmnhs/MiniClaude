@@ -22,6 +22,8 @@ class PongResult(BaseModel):
 class AgentRunCommand(BaseModel):
     type: Literal["agent.run"] = "agent.run"
     goal: str
+    # 客户端工作目录（绝对路径，必填）；工具/沙箱/审批以此为根
+    workspace: str
 
 class AgentRunResult(BaseModel):
     run_id: str
@@ -45,6 +47,8 @@ class SessionCreateCommand(BaseModel):
     title: str = ""
     # 客户端可预生成 id 并在 create 前先订阅，服务端未提供时自行生成；
     session_id: str | None = Field(default=None, pattern=SESSION_ID_PATTERN)
+    # 该会话的工作目录（绝对路径，必填），决定工具/沙箱/审批/项目级资源的根
+    workspace: str
 
 
 class SessionCreateResult(BaseModel):
@@ -74,12 +78,14 @@ class SessionGetHistoryResult(BaseModel):
 class SessionResumeCommand(BaseModel):
     type: Literal["session.resume"] = "session.resume"
     session_id: str = Field(pattern=SESSION_ID_PATTERN)
+    workspace: str
 
 
 class SessionResumeResult(BaseModel):
     session_id: str
     status: SessionStatus
     run_count: int = 0
+    workspace: str = ""
 
 
 class SessionCloseCommand(BaseModel):

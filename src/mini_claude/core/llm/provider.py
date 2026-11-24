@@ -6,7 +6,8 @@ import os
 from typing import Any
 
 import anthropic
-import httpx
+import httpx2
+
 from mini_claude.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsageEvent
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
@@ -113,7 +114,7 @@ class AnthropicProvider:
                         text_parts.append(text)
                     final_message = await stream.get_final_message()
                 break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError) as exc:
+            except (httpx2.RemoteProtocolError, httpx2.ReadError, httpx2.ConnectError) as exc:
                 if attempt == _MAX_STREAM_RETRIES:
                     logger.error(
                         "stream failed after %d attempts run_id=%s step=%d: %s",

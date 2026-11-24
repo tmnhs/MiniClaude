@@ -67,6 +67,33 @@ def cmd_core_status(config: MiniClaudeConfig) -> None:
     except (ConnectionRefusedError, OSError):
         print("not running")
 
+# 确保 daemon 在运行：已连通则直接返回，否则后台拉起并等待端口就绪。
+# 供 TUI / CLI 在做任何请求前调用，实现“没有就自动启动”。
+def ensure_daemon(config: MiniClaudeConfig, timeout: float = 5.0) -> None:
+    try:
+        asyncio.run(_ping_check(config))
+        return
+    except (ConnectionRefusedError, OSError):
+        pass
+
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # 以 home 为 cwd 启动：daemon 配置只依赖全局 ~/.mc，不受首个客户端目录的 .env/config 影响
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "mini_claude.core"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=Path.home(),
+    )
+    _PID_FILE.write_text(str(proc.pid))
+
+    if not asyncio.run(_wait_until_ready(config, timeout)):
+        raise SystemExit(
+            f"failed to start core daemon ({config.host}:{config.port}); "
+            "check ~/.mc/logs or run `mc core status`"
+        )
+
+
 # 在后台启动 daemon，若已在运行则提示并退出
 def cmd_core_start(config: MiniClaudeConfig) -> None:
     try:
@@ -81,6 +108,7 @@ def cmd_core_start(config: MiniClaudeConfig) -> None:
         start_new_session=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        cwd=Path.home(),
     )
 
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)

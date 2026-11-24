@@ -101,22 +101,24 @@ class AgentRunner:
         child_runs_dir: Path | None = None,
         session_id: str = "",
         tool_whitelist: list[str] | None = None,
+        workspace: Path,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
+        ws = workspace.resolve()
 
         def _ok(name: str) -> bool:
             return allowed is None or name in allowed
 
         registry = ToolRegistry()
         for t in [
-            ReadFileTool(),
-            BashTool(sandbox=self._config.sandbox),
-            WriteFileTool(),
-            EditFileTool(),
-            ListDirTool(),
-            GrepTool(),
-            GlobTool(),
-            GitTool(),
+            ReadFileTool(workspace=ws),
+            BashTool(sandbox=self._config.sandbox, workspace=ws),
+            WriteFileTool(workspace=ws),
+            EditFileTool(workspace=ws),
+            ListDirTool(workspace=ws),
+            GrepTool(workspace=ws),
+            GlobTool(workspace=ws),
+            GitTool(workspace=ws),
         ]:
             if _ok(t.name):
                 registry.register(t)
@@ -151,6 +153,7 @@ class AgentRunner:
                         session_id=session_id,
                         depth=0,
                         sandbox=self._config.sandbox,
+                        workspace=ws,
                     )
                 )
         
@@ -165,8 +168,8 @@ class AgentRunner:
         return registry
 
     # 执行一次完整的 agent run（委托给 run_and_capture，忽略返回值）
-    async def run(self, goal: str, *, run_id: str | None = None) -> None:
-        await self.run_and_capture(goal, run_id=run_id)
+    async def run(self, goal: str, *, workspace: Path, run_id: str | None = None) -> None:
+        await self.run_and_capture(goal, run_id=run_id, workspace=workspace)
 
     # 执行 agent run 并返回 RunOutcome（含最终文字结果）
     async def run_and_capture(
@@ -178,7 +181,10 @@ class AgentRunner:
         store: SessionStore | None = None,
         system_prompt_override: str | None = None,
         tool_whitelist: list[str] | None = None,
+        workspace: Path,
     ) -> RunOutcome:
+        # 本次 run 的工作目录（必填）：工具/沙箱/审批/项目级资源均以此为根
+        ws = workspace.resolve()
         # 创建run_id对应的目录
         run_id = run_id or new_run_id()
         if session is not None and store is not None:
@@ -199,7 +205,7 @@ class AgentRunner:
             bus.subscribe(handler)
 
         global_ctx = load_context_file(Path("~/.mc/context.md").expanduser())
-        project_ctx = load_context_file(Path(".mc/context.md"))
+        project_ctx = load_context_file(ws / ".mc/context.md")
 
         # 创建工作记忆
         ctx = ExecutionContext(
@@ -252,6 +258,7 @@ class AgentRunner:
                         child_runs_dir=child_runs_dir,
                         session_id=session_id_str,
                         tool_whitelist=tool_whitelist,
+                        workspace=ws,
                     )
     
                 session_dir = (
@@ -267,6 +274,7 @@ class AgentRunner:
                         compactor=compactor,
                         compact_threshold=self._config.compaction.auto_threshold,
                         session_id=session_id_str,
+                        workspace=ws,
                 )
                 await loop.run(ctx)
             except asyncio.CancelledError:
@@ -318,6 +326,7 @@ class AgentLoop:
         session_id: str = "",
         compactor: Compactor | None = None,
         compact_threshold: float = 0.80,
+        workspace: Path | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -326,6 +335,7 @@ class AgentLoop:
         self._session_id = session_id
         self._compactor = compactor
         self._compact_threshold = compact_threshold
+        self._workspace = workspace
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, ctx: ExecutionContext) -> None:
@@ -378,6 +388,7 @@ class AgentLoop:
                         self._registry, tc, self._bus, ctx.run_id,
                         permission_manager=self._permission_manager,
                         session_id=self._session_id,
+                        workspace=self._workspace,
                     )
                     ctx.add_tool_result(tc.id, result.content, is_error=result.is_error)
             elif response.stop_reason == "max_tokens" and response.tool_calls:

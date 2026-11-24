@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any, cast
 from pydantic import ValidationError
 
@@ -57,6 +58,7 @@ async def invoke_tool(
     *,
     permission_manager: PermissionManager | None = None,
     session_id: str = "",
+    workspace: Path | None = None,
 ) -> ToolResult:
     t0 = time.monotonic()
 
@@ -104,6 +106,7 @@ async def invoke_tool(
             params=dict(tool_call.input),
             session_id=session_id,
             event_emitter=_emit_permission,
+            workspace=workspace,
         )
 
         if allowed:
