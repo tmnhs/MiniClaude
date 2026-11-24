@@ -35,13 +35,16 @@ def _context_window(model: str) -> int:
     return _MODEL_CONTEXT_WINDOWS.get(model, 200_000)
 
 class AnthropicProvider:
-    # 初始化 Anthropic 客户端；client 可在测试时注入以跳过 API key 检查
+    # 初始化 Anthropic 客户端；client 可在测试时注入以跳过环境变量检查
     def __init__(self, model: str, client: Any = None) -> None:
         if client is None:
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 raise SystemExit("ANTHROPIC_API_KEY not set")
-            self._client: Any = anthropic.AsyncAnthropic(api_key=api_key)
+            base_url = os.environ.get("ANTHROPIC_BASE_URL")
+            if not base_url:
+                raise SystemExit("ANTHROPIC_BASE_URL not set")
+            self._client: Any = anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url)
         else:
             self._client = client
         self._model = model

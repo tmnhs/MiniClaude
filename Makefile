@@ -7,6 +7,9 @@ lint:
 test:
 	uv run pytest tests/unit -v
 
+install:
+	./scripts/install.sh
+
 integration-test:
 	uv run pytest tests/integration -v
 
