@@ -150,13 +150,15 @@ async def test_subscribe_replays_missing_session_returns_zero(
 async def test_session_resume_handler_loads_from_disk(tmp_path: Any) -> None:
     store = SessionStore(tmp_path)
     first = SessionManager(store, lambda: None, EventBus())  # type: ignore[arg-type]
-    session = await first.create("chat")
+    session = await first.create("chat", workspace=str(tmp_path))
     await first.close(session.id)
 
     app = CoreApp()
     app._sessions = SessionManager(store, lambda: None, EventBus())  # type: ignore[arg-type]
 
-    result = await app._session_resume_handler({"session_id": session.id})
+    result = await app._session_resume_handler(
+        {"session_id": session.id, "workspace": str(tmp_path)}
+    )
 
     assert result.session_id == session.id
     assert result.status == "waiting_for_input"
@@ -192,7 +194,7 @@ async def test_run_task_exception_publishes_failed_event() -> None:
     app._sessions = _FakeSessions()  # type: ignore[assignment]
     app._bus.subscribe(_handler)
 
-    await app._agent_run_handler({"goal": "x"})
+    await app._agent_run_handler({"goal": "x", "workspace": "/tmp"})
     await asyncio.wait_for(found.wait(), timeout=2.0)
 
     assert finished[0].status == "failed"

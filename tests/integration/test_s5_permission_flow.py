@@ -115,7 +115,7 @@ async def test_permission_allow_once_tool_executes(tmp_path: Path) -> None:
 
     bus.subscribe(collect)
     outcome = await _runner(_SingleBashProvider(), bus, manager, tmp_path).run_and_capture(
-        "run bash"
+        "run bash", workspace=tmp_path
     )
 
     assert "permission.requested" in event_types
@@ -145,7 +145,9 @@ async def test_permission_deny_once_tool_not_executed(tmp_path: Path) -> None:
             failed_events.append(e)
 
     bus.subscribe(collect)
-    await _runner(_SingleBashProvider(), bus, manager, tmp_path).run_and_capture("run bash")
+    await _runner(_SingleBashProvider(), bus, manager, tmp_path).run_and_capture(
+        "run bash", workspace=tmp_path
+    )
 
     assert "permission.requested" in event_types
     assert "tool.call_failed" in event_types
@@ -172,7 +174,7 @@ async def test_always_allow_cached_within_session(tmp_path: Path) -> None:
 
     bus.subscribe(collect)
     outcome = await _runner(_TwoBashProvider(), bus, manager, tmp_path).run_and_capture(
-        "run two bash commands"
+        "run two bash commands", workspace=tmp_path
     )
 
     assert perm_requested_count == 1

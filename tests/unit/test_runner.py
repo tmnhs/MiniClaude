@@ -105,7 +105,7 @@ async def _run(
         extra_handlers=[_collect],
         runs_dir=tmp_path,
     )
-    await runner.run(goal)
+    await runner.run(goal, workspace=tmp_path)
     return collected
 
 
@@ -182,7 +182,7 @@ async def test_extra_handlers_receive_events(tmp_path: Path) -> None:
         extra_handlers=[_second],
         runs_dir=tmp_path,
     )
-    await runner.run("goal")
+    await runner.run("goal", workspace=tmp_path)
     assert len(secondary) > 0
 
 
@@ -224,7 +224,7 @@ async def test_injected_bus_receives_events(tmp_path: Path) -> None:
         provider=_EndTurnProvider(),  # type: ignore[arg-type]
         runs_dir=tmp_path,
     )
-    await runner.run("goal")
+    await runner.run("goal", workspace=tmp_path)
 
     types = [e.type for e in collected]  # type: ignore[attr-defined]
     assert "run.started" in types
@@ -253,7 +253,9 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
     provider = _CapturingProvider(LlmResponse(stop_reason="end_turn", text="done"))
     runner = AgentRunner(_config(), provider=provider, runs_dir=tmp_path / "runs")
 
-    await runner.run_and_capture("remember python", run_id="run-new", session=session, store=store)
+    await runner.run_and_capture(
+        "remember python", run_id="run-new", session=session, store=store, workspace=tmp_path
+    )
 
     assert provider.messages == [{"role": "user", "content": "remember python"}]
     assert provider.system is not None
@@ -311,7 +313,9 @@ async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
     store.append_message("sess-1", "user", "remember")
 
     runner = AgentRunner(_config(max_steps=3), provider=_NoteProvider(), runs_dir=tmp_path)
-    await runner.run_and_capture("remember", run_id="run-1", session=session, store=store)
+    await runner.run_and_capture(
+        "remember", run_id="run-1", session=session, store=store, workspace=tmp_path
+    )
 
     assert "Use Python 3.12" in store.read_notes("sess-1")
 
@@ -348,7 +352,7 @@ async def _run_with_session(
         _config(), bus=external_bus, provider=provider, runs_dir=tmp_path / "runs"
     )
     await runner.run_and_capture(
-        "hi", run_id="run-tag", session=session, store=store
+        "hi", run_id="run-tag", session=session, store=store, workspace=tmp_path
     )
     return collected
 
