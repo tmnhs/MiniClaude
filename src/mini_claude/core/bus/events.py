@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator
+from pydantic import BaseModel, Discriminator, Field
 
 
 class CoreStartedEvent(BaseModel):
@@ -152,6 +152,8 @@ class PermissionRequestedEvent(BaseModel):
     tool_name: str
     params: dict[str, Any]
     param_preview: str
+    risk_level: Literal["low", "medium", "high"] = "low"
+    affected_paths: list[str] = Field(default_factory=list)
     session_id: str
     ts: str
 

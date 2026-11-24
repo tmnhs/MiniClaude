@@ -4,10 +4,14 @@ import json
 import logging
 from typing import Any
 
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
+from rich.text import Text
 from textual import events
+from textual._context import NoActiveAppError
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widget import Widget
@@ -71,7 +75,21 @@ class LLMStreamBlock(Static):
 
         self._finalized = True
         if self._text.strip():
-            self.update(Markdown(self._text, code_theme="monokai"))
+            self.update(self._markdown_content())
+
+    # 把 Markdown 渲染为 Content：Rich 渲染结果是 RichVisual，
+    # Textual 无法从中提取选中文本，导致 Ctrl+C 复制不到内容
+    def _markdown_content(self) -> Content:
+        try:
+            console = self.app.console
+        except NoActiveAppError:
+            console = Console()
+        width = self.content_size.width or console.width
+        options = console.options.update_width(width).update(highlight=False)
+        text = Text()
+        for segment in console.render(Markdown(self._text, code_theme="monokai"), options):
+            text.append(segment.text, style=segment.style)
+        return Content.from_rich_text(text, console)
 
 
 class ToolCallBlock(Widget):
@@ -346,11 +364,21 @@ class PermissionSelect(Static):
             self.decision = decision
             super().__init__()
 
-    # 初始化控件，存储工具 ID（用于 IPC 回复）
-    def __init__(self, tool_use_id: str) -> None:
+    # 初始化控件，存储工具 ID（用于 IPC 回复）与风险等级（高风险不提供 always allow）
+    def __init__(self, tool_use_id: str, risk_level: str = "low") -> None:
         super().__init__("")
         self._tool_use_id = tool_use_id
+        self._risk_level = risk_level
+        self._choices = self._choices_for_risk(risk_level)
+        allowed = {choice[0] for choice in self._choices}
+        self._key_map = {key: dec for key, dec in self._KEY_MAP.items() if dec in allowed}
         self._cursor = 0
+
+    # 高风险命令不提供 always allow 选项
+    def _choices_for_risk(self, risk_level: str) -> tuple[tuple[str, str, str], ...]:
+        if risk_level == "high":
+            return tuple(c for c in self._CHOICES if c[0] != "always_allow")
+        return self._CHOICES
 
     def on_mount(self) -> None:
         self.update(self._render_ui())
@@ -382,7 +410,7 @@ class PermissionSelect(Static):
     # 生成带光标高亮的选项列表文本
     def _render_ui(self) -> str:
         lines: list[str] = []
-        for i, (_, label, key_hint) in enumerate(self._CHOICES):
+        for i, (_, label, key_hint) in enumerate(self._choices):
             if i == self._cursor:
                 lines.append(f"  [bold cyan]❯ {label}[/bold cyan]  [dim]{key_hint}[/dim]")
             else:
@@ -397,17 +425,17 @@ class PermissionSelect(Static):
 
         if key in ("up", "k"):
             event.stop()
-            self._cursor = (self._cursor - 1) % len(self._CHOICES)
+            self._cursor = (self._cursor - 1) % len(self._choices)
             self.update(self._render_ui())
         elif key in ("down", "j"):
             event.stop()
-            self._cursor = (self._cursor + 1) % len(self._CHOICES)
+            self._cursor = (self._cursor + 1) % len(self._choices)
             self.update(self._render_ui())
         elif key == "enter":
             event.stop()
-            self._pick(self._CHOICES[self._cursor][0])
+            self._pick(self._choices[self._cursor][0])
         else:
-            decision = self._KEY_MAP.get(key)
+            decision = self._key_map.get(key)
             if decision is not None:
                 event.stop()
                 self._pick(decision)
@@ -437,17 +465,34 @@ class PermissionBlock(Static):
             self.decision = decision
             super().__init__()
 
-    # 初始化审批块，记录工具 ID、名称和参数预览
-    def __init__(self, tool_use_id: str, tool_name: str, param_preview: str) -> None:
+    # 初始化审批块，记录工具 ID、名称、参数预览与影响路径
+    def __init__(
+        self,
+        tool_use_id: str,
+        tool_name: str,
+        param_preview: str,
+        affected_paths: tuple[str, ...] = (),
+    ) -> None:
         self._tool_use_id = tool_use_id
         self._tool_name = tool_name
         self._param_preview = param_preview
+        self._affected_paths = affected_paths
         self._resolved = False
         super().__init__(self._pending_text(), classes="log-line")
 
+    # 影响路径，供审批块单行展示
+    def _paths_suffix(self) -> str:
+        if not self._affected_paths:
+            return ""
+        joined = ", ".join(self._affected_paths)
+        return f"  [dim]paths: {escape(joined)}[/dim]"
+
     def _pending_text(self) -> str:
         preview = f"  [dim]{escape(self._param_preview)}[/dim]" if self._param_preview else ""
-        return f"[bold red]? permission[/bold red]  [bold]{self._tool_name}[/bold]{preview}"
+        return (
+            f"[bold red]? permission[/bold red]  [bold]{self._tool_name}[/bold]"
+            f"{self._paths_suffix()}{preview}"
+        )
 
     # 将块收缩为单行摘要并发布 Resolved 消息
     def _resolve(self, decision: str) -> None:
@@ -461,6 +506,7 @@ class PermissionBlock(Static):
         preview = f"  [dim]{escape(self._param_preview)}[/dim]" if self._param_preview else ""
 
         self.update(
-            f"{icon} permission  [bold]{self._tool_name}[/bold]{preview}  [dim]{label}[/dim]"
+            f"{icon} permission  [bold]{self._tool_name}[/bold]"
+            f"{self._paths_suffix()}{preview}  [dim]{label}[/dim]"
         )
         self.post_message(self.Resolved(self, decision))

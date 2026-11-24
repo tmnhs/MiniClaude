@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from rich.markdown import Markdown
 from rich.text import Text
+from textual.binding import Binding
+from textual.content import Content
+from textual.selection import SELECT_ALL
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -11,6 +13,7 @@ from mini_claude.tui.app import MiniClaudeTuiApp
 from mini_claude.tui.widgets import (
     LLMStreamBlock,
     PermissionBlock,
+    PermissionSelect,
     ToolCallBlock,
     _param_summary,
     _preview,
@@ -107,13 +110,53 @@ def test_param_summary_prefers_key_fields() -> None:
     assert _param_summary("note_save", {"content": "Python 3.12"}) == "content='Python 3.12'"
 
 
-# 功能：验证 LLMStreamBlock 结束时会把累积文本渲染为 Rich Markdown
-# 设计：直接调用 finalize_markdown，断言 renderable 类型，覆盖 Markdown polish 的核心行为
+# 功能：验证 LLMStreamBlock 结束时渲染为 Content（Markdown 排版但可选中复制）
+# 设计：RichVisual 不支持 Textual 的文本提取，必须以 Content 承载渲染结果
 def test_llm_block_finalize_renders_markdown() -> None:
     block = LLMStreamBlock()
     block.append_token("## Title\n\n- one\n\n```python\nprint('hi')\n```")
     block.finalize_markdown()
-    assert isinstance(block.content, Markdown)
+    assert isinstance(block.content, Content)
+
+
+# 功能：验证收尾后的 Markdown 块能被提取出完整文本，供 Ctrl+C 复制
+# 设计：用 SELECT_ALL 模拟全选，断言 get_selection 返回正文而非 None
+def test_llm_block_finalize_is_copyable() -> None:
+    block = LLMStreamBlock()
+    block.append_token("## Title\n\nHello **world**")
+    block.finalize_markdown()
+
+    selected = block.get_selection(SELECT_ALL)
+
+    assert selected is not None
+    text, _ = selected
+    assert "Title" in text
+    assert "Hello world" in text
+
+
+# 功能：验证 Cmd+C（super+c）注册了复制绑定
+# 设计：Screen 先复制选中文本；App 层的 super+c 作为无选中时的兜底
+def test_super_c_binding_registered() -> None:
+    bindings = {
+        (binding.key, binding.action)
+        for binding in MiniClaudeTuiApp.BINDINGS
+        if isinstance(binding, Binding)
+    }
+    assert ("super+c", "copy_last") in bindings
+
+
+# 功能：验证 action_copy_last 把最后一条 LLM 文本写入剪贴板
+# 设计：替换 copy_to_clipboard/notify，避免依赖真实系统剪贴板与消息泵
+def test_action_copy_last_writes_clipboard() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    copied: list[str] = []
+    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
+    app.notify = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    app._plain_history.append("final answer")  # type: ignore[attr-defined]
+
+    app.action_copy_last()
+
+    assert copied == ["final answer"]
 
 
 # 功能：验证非 token 事件后 _current_llm 被重置，下一个 token 开启新块
@@ -309,6 +352,28 @@ def test_replay_permission_denied_resolves_block() -> None:
     assert "uid-2" not in app._pending_permission_blocks
     assert widgets[0]._resolved
     assert "denied" in _text(widgets[0])
+
+
+# 功能：验证审批块展示影响路径但不展示风险等级
+# 设计：TUI 不再呈现风险徽标，路径仍保留供用户判断
+def test_permission_block_shows_paths_without_risk_badge() -> None:
+    block = PermissionBlock("u1", "bash", "command='rm -rf x'", ("/tmp/x",))
+    text = _text(block)
+    assert "/tmp/x" in text
+    assert "HIGH RISK" not in text
+    assert "MEDIUM" not in text
+    assert "LOW" not in text
+
+
+# 功能：验证高风险选择器不提供 always allow 选项
+# 设计：高风险直接移除该选项与快捷键，而不是给出提示
+def test_permission_select_hides_always_allow_on_high_risk() -> None:
+    select = PermissionSelect("u1", "high")
+    rendered = select._render_ui()
+    assert "Always allow" not in rendered
+    assert "Allow once" in rendered
+    assert "a" not in select._key_map
+    assert "2" not in select._key_map
 
 
 # 功能：验证实时模式 permission.requested 仍会挂载交互选择器并锁住输入框

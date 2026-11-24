@@ -21,6 +21,13 @@ class ChatPrinter:
     def __init__(self) -> None:
         self._inline = False
         self.pending_permission_id: str | None = None
+        self.pending_risk: str = "low"
+
+    # 当前可选审批项；高风险命令不提供 always allow
+    def _options_text(self) -> str:
+        if self.pending_risk == "high":
+            return "  y=allow once  n=deny once  d=always deny"
+        return "  y=allow once  a=always allow  n=deny once  d=always deny"
 
     # 若当前 LLM token 尚未换行，则补一个换行
     def _ensure_newline(self) -> None:
@@ -42,12 +49,18 @@ class ChatPrinter:
             tool_name = str(event.get("tool_name", ""))
             param_preview = str(event.get("param_preview", ""))
             tool_use_id = str(event.get("tool_use_id", ""))
-            print(f"[permission] {tool_name}  {param_preview}")
-            print("  y=allow once  a=always allow  n=deny once  d=always deny")
+            risk_level = str(event.get("risk_level", "low"))
+            affected = [str(p) for p in (event.get("affected_paths") or [])]
+            print(f"[permission] {tool_name}  [{risk_level}]  {param_preview}")
+            if affected:
+                print(f"  paths: {', '.join(affected)}")
             self.pending_permission_id = tool_use_id
+            self.pending_risk = risk_level
+            print(self._options_text())
         elif t == "session.waiting_for_input":
             self._ensure_newline()
             self.pending_permission_id = None
+            self.pending_risk = "low"
             print("[waiting for input]")
         elif t == "session.closed":
             self._ensure_newline()
@@ -122,12 +135,14 @@ async def _chat_async(config: MiniClaudeConfig) -> int:
             # 有待审批的权限请求时，将用户输入解释为决策而非聊天消息
             if printer.pending_permission_id:
                 decision = _DECISION_MAP.get(content.lower())
+                if decision == "always_allow" and printer.pending_risk == "high":
+                    decision = None
                 if decision is None:
-                    print("  enter y (allow once), a (always allow), "
-                          "n (deny once), d (always deny)")
+                    print(printer._options_text())
                     continue
                 tool_use_id = printer.pending_permission_id
                 printer.pending_permission_id = None
+                printer.pending_risk = "low"
                 await client.send_command(
                     "permission.respond",
                     {

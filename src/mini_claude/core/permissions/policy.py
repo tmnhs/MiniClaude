@@ -5,27 +5,18 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
+from mini_claude.core.permissions.analysis import analyze_command
+
 
 class PermissionDecision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
 
-# 检测 bash 命令是否操作 cwd 之外路径的正则规则列表（强制触发 ASK，不可被 allow_patterns 绕过）
-OUTSIDE_CWD_HEURISTICS: list[str] = [
-    r"(^|\s)/[^\s]",              # 绝对路径
-    r"(^|\s)~",                   # 家目录（~）
-    r"(^|\s)\.\.(/|$|\s)",        # 上级目录穿越
-    r"\$\{?HOME\b",               # $HOME 变量
-    r"\$\{?PWD\b",                # $PWD 变量
-    r"(^|\s|;|&&|\|\|)cd(\s|$)",  # 显式 cd
-]
-
-_OUTSIDE_CWD_RE: list[re.Pattern[str]] = [re.compile(p) for p in OUTSIDE_CWD_HEURISTICS]
-
-# 判断 bash 命令是否命中 outside-cwd 启发式规则
+# 判断 bash 命令是否操作 cwd 之外路径（强制触发 ASK，不可被 allow_patterns 绕过）。
+# 基于 shell AST 分析，能识别带引号路径、$HOME 与 cd，避免把 --grep=/x 之内的选项值误判为路径。
 def matches_outside_cwd(command: str) -> bool:
-    return any(pat.search(command) for pat in _OUTSIDE_CWD_RE)
+    return analyze_command(command).outside
 
 @dataclass
 class ToolPolicy:
