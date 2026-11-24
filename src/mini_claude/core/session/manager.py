@@ -136,37 +136,43 @@ class SessionManager:
                     )
 
             runner = self._runner_factory()
-            await runner.run_and_capture(
-                goal=goal,
-                run_id=run_id,
-                session=session,
-                store=self._store,
-                system_prompt_override=system_prompt_override,
-                tool_whitelist=tool_whitelist,
-                workspace=workspace,
-            )
-
-            session.updated_at = now_iso()
-            if session.mode == "one_shot":
-                session.status = "closed"
-                await self._bus.publish(
-                    SessionClosedEvent(
-                        session_id=sid, 
-                        ts=session.updated_at
-                        )
+            try:
+                await runner.run_and_capture(
+                    goal=goal,
+                    run_id=run_id,
+                    session=session,
+                    store=self._store,
+                    system_prompt_override=system_prompt_override,
+                    tool_whitelist=tool_whitelist,
+                    workspace=workspace,
                 )
-            else:
-                session.status = "waiting_for_input"
-                await self._bus.publish(
-                    SessionWaitingForInputEvent(
-                        session_id=sid,
-                        last_run_id=run_id,
-                        ts=session.updated_at,
-                    )
-                )
+            except asyncio.CancelledError:
+                # 用户主动中断：runner 已发布 cancelled 终态，这里负责恢复会话状态，
+                # 否则客户端会一直停留在 busy，无法继续对话
+                await self._finish_turn(session, sid, run_id)
+                raise
 
-            self._store.write_meta(session)
+            await self._finish_turn(session, sid, run_id)
             return run_id
+
+    # 单轮结束（正常完成或被取消）后更新会话状态并广播，使客户端解除 busy
+    async def _finish_turn(self, session: Session, sid: str, run_id: str) -> None:
+        session.updated_at = now_iso()
+        if session.mode == "one_shot":
+            session.status = "closed"
+            await self._bus.publish(
+                SessionClosedEvent(session_id=sid, ts=session.updated_at)
+            )
+        else:
+            session.status = "waiting_for_input"
+            await self._bus.publish(
+                SessionWaitingForInputEvent(
+                    session_id=sid,
+                    last_run_id=run_id,
+                    ts=session.updated_at,
+                )
+            )
+        self._store.write_meta(session)
 
     # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
     async def compact(self, sid: str, focus: str = "") -> Any:

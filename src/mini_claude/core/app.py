@@ -13,13 +13,15 @@ from pydantic import BaseModel
 
 import mini_claude
 from mini_claude.core.bus.commands import (
-    AgentRunCommand, 
-    AgentRunResult, 
-    EventSubscribeCommand, 
+    AgentRunCommand,
+    AgentRunResult,
+    EventSubscribeCommand,
     EventSubscribeResult,
     PermissionRespondCommand,
-    PermissionRespondResult, 
+    PermissionRespondResult,
     PongResult,
+    RunCancelCommand,
+    RunCancelResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCompactCommand,
@@ -61,7 +63,7 @@ def _sessions_root() -> Path:
     return Path("~/.mc/sessions").expanduser()
 
 
-class CoreApp():
+class CoreApp:
     def __init__(self) -> None:
         self._start_time = time.monotonic()
         self._bus = EventBus()
@@ -69,6 +71,8 @@ class CoreApp():
         self._trace: TraceWriter | None = None
         self._config: MiniClaudeConfig | None = None
         self._running_runs: set[asyncio.Task[None]] = set()
+        # session_id -> 当前运行中的 run 任务，用于 run.cancel 精确取消
+        self._active_runs: dict[str, asyncio.Task[Any]] = {}
         self._sessions: SessionManager | None = None
         self._permission_manager: PermissionManager | None = None
         self._mcp_manager: McpServerManager | None = None
@@ -100,6 +104,7 @@ class CoreApp():
         )
 
         self._running_runs.add(run_task)
+        self._active_runs[session.id] = run_task
         run_task.add_done_callback(lambda t: self._on_run_done(t, run_id, session.id))
         return AgentRunResult(run_id=run_id)
 
@@ -108,6 +113,8 @@ class CoreApp():
         self, task: asyncio.Task[Any], run_id: str, session_id: str
     ) -> None:
         self._running_runs.discard(task)
+        if self._active_runs.get(session_id) is task:
+            self._active_runs.pop(session_id, None)
 
         # 取消由 runner 内部自行标记终态，这里无需处理
         if task.cancelled():
@@ -155,8 +162,38 @@ class CoreApp():
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
         assert self._sessions is not None
         cmd = SessionSendMessageCommand.model_validate(params)
-        run_id = await self._sessions.send_message(cmd.session_id, cmd.content)
+
+        # 单独建任务并登记：session.send_message 会一直挂起到 run 结束，
+        # run.cancel 需要拿到任务句柄才能中断它
+        task = asyncio.create_task(
+            self._sessions.send_message(cmd.session_id, cmd.content)
+        )
+        self._active_runs[cmd.session_id] = task
+        try:
+            run_id = await task
+        except asyncio.CancelledError:
+            # run.cancel 取消的是内层 send_message 任务；此处吞掉该异常并返回正常结果，
+            # 否则 RPC handler 被取消、客户端 pending 请求将永久挂起。
+            # 若是本 handler 自身被取消（如服务关闭），继续向上传播。
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
+            run_id = ""
+        finally:
+            if self._active_runs.get(cmd.session_id) is task:
+                self._active_runs.pop(cmd.session_id, None)
         return SessionSendMessageResult(run_id=run_id)
+
+    # 取消指定 session 当前运行中的 run；runner 会发布 cancelled 终态事件
+    async def _run_cancel_handler(self, params: dict[str, Any]) -> RunCancelResult:
+        cmd = RunCancelCommand.model_validate(params)
+        task = self._active_runs.get(cmd.session_id)
+        if task is None or task.done():
+            return RunCancelResult(cancelled=False)
+
+        logger.info("run.cancel session_id=%s", cmd.session_id)
+        task.cancel()
+        return RunCancelResult(cancelled=True)
 
     # 返回 session 的完整 Anthropic messages 历史
     async def _session_history_handler(self, params: dict[str, Any]) -> SessionGetHistoryResult:
@@ -375,6 +412,7 @@ class CoreApp():
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
         server.register("session.compact", self._session_compact_handler)
+        server.register("run.cancel", self._run_cancel_handler)
 
         addr = await server.start()
         logger.info("mini-core %s listening addr=%s", mini_claude.__version__, addr)
@@ -388,11 +426,12 @@ class CoreApp():
         await shutdown.wait()
 
         logger.info("shutting down")
-        for run_task in list(self._running_runs):
+        active = set(self._running_runs) | set(self._active_runs.values())
+        for run_task in active:
             run_task.cancel()
 
-        if self._running_runs:
-            await asyncio.gather(*self._running_runs, return_exceptions=True)
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
 
         if self._mcp_manager is not None:
             await self._mcp_manager.stop_all()

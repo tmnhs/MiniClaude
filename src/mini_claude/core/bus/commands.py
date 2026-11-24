@@ -116,6 +116,13 @@ class SessionCompactResult(BaseModel):
     summary_tokens: int
     saved_tokens: int
 
+class RunCancelCommand(BaseModel):
+    type: Literal["run.cancel"] = "run.cancel"
+    session_id: str
+
+class RunCancelResult(BaseModel):
+    cancelled: bool = False
+
 # 根据 type 字段决定命令类型的判别联合
 Command = Annotated[
     PingCommand
@@ -127,7 +134,8 @@ Command = Annotated[
     | SessionResumeCommand
     | SessionCloseCommand
     | PermissionRespondCommand
-    | SessionCompactCommand,
+    | SessionCompactCommand
+    | RunCancelCommand,
     Discriminator("type"),
 ]
 

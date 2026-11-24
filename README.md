@@ -2,7 +2,15 @@
 
 ![mc-tui主界面](docs/imgs/mc-tui主界面.png)
 
-本地 AI Agent 系统。`mc-core` 作为常驻守护进程统一处理所有任务，`mc`（CLI）与 `mc-tui`（TUI）通过 TCP loopback 与之通信。
+MiniClaude 是一个仿 Claude Code 的本地 AI Agent 系统，面向终端里的真实开发任务：阅读代码、改写文件、执行命令、排查故障，并以多轮对话持续推进。
+
+
+
+## 总体架构
+
+采用「单 daemon + 多客户端」架构：`mc-core` 常驻后台，负责会话管理、agent 循环与工具执行；`mc-tui`（Textual 界面）和 `mc`（命令行）通过本地 TCP 上的 JSON-RPC + NDJSON 接入，多个终端共享同一份会话与执行环境。
+
+与直接调用模型 API 相比，MiniClaude 把执行链路做成可审批、可沙箱、可恢复、可观测的闭环：敏感工具调用先经过权限审批，命令在可选的系统级沙箱中运行；会话与每次 run 的事件全部持久化，支持恢复、回放和上下文压缩；进程内事件总线驱动 TUI 实时渲染，并提供 IPC/事件/LLM 三层 trace。
 
 ```mermaid
 flowchart LR
@@ -18,21 +26,37 @@ flowchart LR
         AG["agent loop"]
         TL["tools / sandbox"]
         PM["permissions"]
+        BUS[["EventBus<br/>进程内事件总线"]]
+        EW["event writer"]
+        IPC["IPC broadcaster<br/>topic / scope 过滤"]
+        TR["trace writer"]
+
         SM --> AG
         AG --> TL
         AG --> PM
+        SM -->|session.*| BUS
+        AG -->|run/step/llm/context 事件| BUS
+        TL -->|tool.* / permission.*| BUS
+        BUS --> EW
+        BUS --> IPC
+        BUS -.->|trace 开启时| TR
     end
 
     LLM["LLM API<br/>Anthropic 兼容协议"]
     STORE[("~/.mc/sessions")]
     CFG["~/.mc/.env<br/>~/.mc/config.toml"]
 
-    TUI -- "TCP loopback · NDJSON" --> SM
-    MC -- "TCP loopback · NDJSON" --> SM
-    AG -- "HTTPS（ANTHROPIC_BASE_URL）" --> LLM
+    TUI -->|JSON-RPC · TCP loopback · NDJSON| SM
+    MC -->|JSON-RPC · TCP loopback · NDJSON| SM
+    IPC -.->|event 推送| TUI
+    IPC -.->|event 推送| MC
+    AG -->|HTTPS（ANTHROPIC_BASE_URL）| LLM
     SM --> STORE
-    DAEMON -. 启动时读取 .-> CFG
+    EW -->|events.jsonl| STORE
+    DAEMON -.->|启动时读取| CFG
 ```
+
+所有组件产出的事件都先发布到 `EventBus`，再由三类订阅者消费：`event writer` 落盘 `events.jsonl`、`IPC broadcaster` 按 topic/scope 推送给已订阅客户端、`trace writer`（可选）写入追踪日志。
 
 ## 特性
 

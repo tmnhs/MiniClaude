@@ -150,6 +150,10 @@ class PermissionManager:
             self._pending.pop(tool_use_id, None)
             logger.info("permission: timeout tool_use_id=%s tool=%s", tool_use_id, tool_name)
             return False, "timeout"
+        except asyncio.CancelledError:
+            # run 被中断时清理挂起请求，避免 respond 命中已废弃的 future
+            self._pending.pop(tool_use_id, None)
+            raise
 
         allowed = self._apply_response(
             raw, session_id, tool_name, analysis.pattern, analysis.risk

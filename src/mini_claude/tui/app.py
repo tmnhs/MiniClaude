@@ -18,7 +18,7 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal
 from textual.css.query import NoMatches
 from textual.widget import Widget
 from textual.widgets import Label, Static
@@ -31,6 +31,7 @@ from mini_claude.core.transport.socket_client import IpcError, SocketClient
 from mini_claude.tui.widgets import (
     ChatTextArea,
     LLMStreamBlock,
+    LogView,
     PermissionBlock,
     PermissionSelect,
     SlashCompleteWidget,
@@ -47,6 +48,7 @@ class MiniClaudeTuiApp(App[None]):
     BINDINGS = [
         Binding("ctrl+q", "quit", "quit"),
         Binding("super+c", "copy_last", "copy last", show=False),
+        Binding("escape", "cancel_run", "cancel run", show=False),
     ]
     CSS = """
     Screen { background: $background; }
@@ -56,11 +58,28 @@ class MiniClaudeTuiApp(App[None]):
         color: $text;
         padding: 0 1;
     }
+    #header-left {
+        width: 1fr;
+        height: 1;
+        text-overflow: ellipsis;
+    }
+    #header-right {
+        width: auto;
+        height: 1;
+        content-align: right middle;
+    }
     #log-view {
         height: 1fr;
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 1;
     }
+    #new-output {
+        height: 1;
+        padding: 0 2;
+        color: $warning;
+        display: none;
+    }
+    #new-output.visible { display: block; }
     Static.user-turn { color: $text; padding: 1 2 0 2; }
     Static.run-header { color: $text-muted; padding: 1 2 0 2; }
     Static.step-divider { color: $text-muted; padding: 0 2; }
@@ -73,27 +92,44 @@ class MiniClaudeTuiApp(App[None]):
 
     # 连接状态 → (展示文案, Rich 颜色)，用于欢迎面板与顶栏
     _STATE_STYLE: dict[str, tuple[str, str]] = {
-        "ready":        ("connected",    "green"),
-        "running":      ("running",      "yellow"),
-        "connecting":   ("connecting",   "yellow"),
-        "disconnected": ("disconnected", "red"),
+        "ready":         ("已连接",   "green"),
+        "running":       ("运行中",   "yellow"),
+        "connecting":    ("连接中",   "yellow"),
+        "disconnected":  ("已断开",   "red"),
+        "resume_failed": ("恢复失败", "red"),
+    }
+
+    # 运行中 spinner 帧，顶栏每秒轮换一帧，表示 agent 仍在工作
+    _SPINNER: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+    # 顶栏上下文占用进度条的格数
+    _CTX_CELLS = 8
+
+    # 输入框状态 → (是否可编辑, 边框提示)
+    _PROMPT_STATES: dict[str, tuple[bool, str]] = {
+        "ready": (True, "输入消息，或键入 / 浏览命令  ·  Enter 发送  ·  Shift+Enter 换行"),
+        "busy": (False, "agent 正在执行…（Esc 中断）"),
+        "permission": (False, "等待权限审批…"),
+        "connecting": (False, "正在连接 daemon…"),
+        "disconnected": (False, "连接已断开，正在重试…"),
+        "closed": (False, "会话已关闭"),
+        "resume_failed": (False, "恢复失败，按 Ctrl+Q 退出"),
     }
 
     # 欢迎面板顶部的 "MINICLAUDE" 方块字形（5 行等高，整体宽 55 列）
     _LOGO_ROWS: tuple[str, ...] = (
-        "█   █ ███ █   █ ███  ████ █       █   █   █ ████  █████",
+        "█   █ ███ █   █ ███ ████  █       █   █   █ ████  █████",
         "██ ██  █  ██  █  █  █     █      █ █  █   █ █   █ █    ",
         "█ █ █  █  █ █ █  █  █     █     █████ █   █ █   █ ████ ",
         "█   █  █  █  ██  █  █     █     █   █ █   █ █   █ █    ",
-        "█   █ ███ █   █ ███  ████ █████ █   █  ███  ████  █████",
+        "█   █ ███ █   █ ███ ████  █████ █   █  ███  ████  █████",
     )
-    # 字形自顶向下的青→蓝渐变
+    # 字形自顶向下的青→蓝五档渐变
     _LOGO_STYLES: tuple[str, ...] = (
-        "bold bright_cyan",
-        "bold bright_cyan",
-        "bold cyan",
-        "bold cyan",
-        "bold #00afaf",
+        "bold #7ae7f7",
+        "bold #3fd7ec",
+        "bold #17c3e0",
+        "bold #0aa9cb",
+        "bold #0b8fb0",
     )
 
     # 初始化连接参数和 TUI 内部状态
@@ -119,7 +155,13 @@ class MiniClaudeTuiApp(App[None]):
         self._plain_history: list[str] = []
         self._session_id: str | None = None
         self._busy = False
+        self._cancel_requested = False
         self._last_context_pct: float = 0.0
+        # 顶栏运行信息：当前 run 的起始时间与 step 计数
+        self._run_started_at: float | None = None
+        self._current_step = 0
+        self._header_state = "connecting"
+        self._spinner_index = 0
         # 最近一次使用的 session_id：连接断开也不清空，用于退出时提示 --resume
         self._last_session_id: str | None = resume_session_id
         # 是否正在回放历史事件：回放期间的审批记录只读，不弹出交互选择器
@@ -128,10 +170,15 @@ class MiniClaudeTuiApp(App[None]):
         self._subagent_run_ids: dict[str, str] = {}  # child run_id -> description
         self._subagent_start_times: dict[str, float] = {}  # child run_id -> start time
 
-     # 构建 UI：顶部状态栏 + 可滚动事件日志
+     # 构建 UI：顶部状态栏（左右分栏）+ 可滚动事件日志 + 新输出提示 + 输入框
     def compose(self) -> ComposeResult:
-        yield Label("[bold]MiniClaude[/bold]  [dim]connecting...[/dim]", id="header")
-        yield VerticalScroll(id="log-view")
+        yield Horizontal(
+            Label(self._header_left_markup(), id="header-left"),
+            Label(self._header_right_markup(), id="header-right"),
+            id="header",
+        )
+        yield LogView(id="log-view")
+        yield Label("有新输出 ↓", id="new-output")
         yield ChatTextArea(
             id="prompt",
             show_line_numbers=False,
@@ -143,10 +190,11 @@ class MiniClaudeTuiApp(App[None]):
         self._slash_items = self._build_slash_items()
         self._welcome = Static(self._render_welcome("connecting"), id="welcome")
         self._append(self._welcome)
+        self._refresh_header()
         self.run_worker(self._socket_loop(), exclusive=True, name="socket")
-        prompt = self.query_one("#prompt", ChatTextArea)
-        prompt.disabled = True
-        prompt.border_title = "connecting..."
+        self._set_prompt_state("connecting")
+        # 运行中定时刷新顶栏的耗时/step 信息
+        self.set_interval(1.0, self._refresh_header_clock)
 
     # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
     def _build_slash_items(self) -> list[tuple[str, str]]:
@@ -273,8 +321,7 @@ class MiniClaudeTuiApp(App[None]):
         self._busy = True
         prompt = event.text_area
         prompt.text = ""
-        prompt.disabled = True
-        prompt.border_title = "agent is working..."
+        self._set_prompt_state("busy", prompt=prompt)
         self._append(Static(f"[bold]>[/bold] {escape(content)}", classes="user-turn"))
 
         self._update_header("running")
@@ -321,6 +368,33 @@ class MiniClaudeTuiApp(App[None]):
         self.copy_to_clipboard(self._plain_history[-1])
         self.notify("Copied last message")
 
+    # Esc 中断当前 run：由 daemon 取消任务并发布 cancelled 终态，前端等待事件解锁
+    def action_cancel_run(self) -> None:
+        if not self._busy or self._cancel_requested:
+            return
+        if self._client is None or self._session_id is None:
+            return
+        self._cancel_requested = True
+        self._append(Static("[dim]正在中断…[/dim]", classes="log-line"))
+        self.run_worker(self._do_cancel_run(), name="cancel_run", exclusive=False)
+
+    # 发送 run.cancel；daemon 返回未取消时复位标志，允许再次尝试
+    async def _do_cancel_run(self) -> None:
+        if self._client is None or self._session_id is None:
+            self._cancel_requested = False
+            return
+
+        try:
+            result = await self._client.send_command(
+                "run.cancel", {"session_id": self._session_id}
+            )
+            if not result.get("cancelled"):
+                self._cancel_requested = False
+                self._append(Static("[dim]没有正在执行的 run[/dim]", classes="log-line"))
+        except (IpcError, RuntimeError, OSError) as e:
+            self._cancel_requested = False
+            self._append(Static(f"[red]cancel error: {e}[/red]", classes="log-line"))
+
     # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
     async def _do_send_message(self, content: str) -> None:
         if self._client is None:
@@ -333,12 +407,7 @@ class MiniClaudeTuiApp(App[None]):
             )
         except (IpcError, RuntimeError, OSError) as e:
             self._busy = False
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = False
-                prompt.read_only = False
-                prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-
+            self._set_prompt_state("ready", focus=True)
             self._update_header("ready")
             self._append(Static(f"[red]send error: {e}[/red]", classes="log-line"))
 
@@ -368,20 +437,42 @@ class MiniClaudeTuiApp(App[None]):
                     pass
 
             if not self._pending_permission_blocks:
-                p = self._prompt()
-                if p is not None:
-                    p.disabled = False
-                    p.read_only = False
-                    p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                    p.focus()
+                self._set_prompt_state("ready", focus=True)
         except Exception:
             logger.exception("on_permission_select_decided failed tool_use_id=%s", tool_use_id)
 
-    # 向日志视图追加一个 widget 并滚动到底部
+    # 向日志视图追加一个 widget；仅在用户已处于底部时自动跟随新内容
     def _append(self, widget: Widget) -> None:
-        log_view = self.query_one("#log-view", VerticalScroll)
+        try:
+            log_view = self.query_one("#log-view", LogView)
+        except Exception:  # NoMatches / ScreenStackError（App 未挂载）
+            return
+
+        at_end = log_view.is_vertical_scroll_end
         log_view.mount(widget)
-        log_view.scroll_end(animate=False)
+        if at_end:
+            log_view.scroll_end(animate=False)
+            self._hide_new_output_hint()
+        else:
+            self._show_new_output_hint()
+
+    # 日志滚动位置变化：回到底部则隐藏"有新输出"提示
+    def on_log_view_scrolled(self, message: LogView.Scrolled) -> None:
+        if message.at_end:
+            self._hide_new_output_hint()
+
+    # 切换日志底部的"有新输出 ↓"提示；未挂载时静默跳过
+    def _show_new_output_hint(self) -> None:
+        try:
+            self.query_one("#new-output", Label).add_class("visible")
+        except Exception:  # NoMatches / ScreenStackError（App 未挂载）
+            pass
+
+    def _hide_new_output_hint(self) -> None:
+        try:
+            self.query_one("#new-output", Label).remove_class("visible")
+        except Exception:  # NoMatches / ScreenStackError（App 未挂载）
+            pass
 
     # 结束当前 LLM 流式块，并保留其纯文本供复制
     def _break_llm(self) -> None:
@@ -410,12 +501,18 @@ class MiniClaudeTuiApp(App[None]):
             logger.debug("failed to remove PermissionSelect tool_use_id=%s", tool_use_id)
 
         if not self._pending_permission_blocks:
-            p = self._prompt()
-            if p is not None:
-                p.disabled = False
-                p.read_only = False
-                p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                p.focus()
+            self._set_prompt_state("ready", focus=True)
+
+    # 丢弃所有待处理的权限控件：run 被中断后这些审批已无意义
+    def _discard_pending_permissions(self) -> None:
+        for block in self._pending_permission_blocks.values():
+            block._resolve("cancelled")
+        self._pending_permission_blocks.clear()
+        try:
+            for select in list(self.query(PermissionSelect)):
+                select.remove()
+        except Exception:
+            logger.debug("failed to discard pending permission selects")
 
     # 断连/换会话时清空瞬态状态，避免上一个会话的残留影响下一个
     def _reset_session_state(self) -> None:
@@ -426,6 +523,10 @@ class MiniClaudeTuiApp(App[None]):
         self._last_context_pct = 0.0
         self._subagent_run_ids.clear()
         self._subagent_start_times.clear()
+        self._run_started_at = None
+        self._current_step = 0
+        self._cancel_requested = False
+        self._hide_new_output_hint()
 
     # 将选择控件挂载到 Screen 顶层（#prompt 之前），避免 VerticalScroll 争抢焦点
     def _mount_permission_select(self, select: PermissionSelect) -> None:
@@ -435,30 +536,95 @@ class MiniClaudeTuiApp(App[None]):
     def _prompt(self) -> ChatTextArea | None:
         try:
             return self.query_one("#prompt", ChatTextArea)
-        except NoMatches:
+        except Exception:  # NoMatches / ScreenStackError（App 未挂载）
             return None
+
+    # 统一设置输入框可用状态与边框提示，避免各调用点文案/字段不一致。
+    # prompt 参数用于提交场景：事件携带的输入框可能尚未挂载到 DOM 查询结果中
+    def _set_prompt_state(
+        self,
+        state: str,
+        *,
+        focus: bool = False,
+        prompt: ChatTextArea | None = None,
+    ) -> None:
+        target = prompt if prompt is not None else self._prompt()
+        if target is None:
+            return
+        enabled, title = self._PROMPT_STATES[state]
+        target.disabled = not enabled
+        target.read_only = False
+        target.border_title = title
+        if enabled and focus:
+            target.focus()
+
+    # 运行中每秒推进 spinner 帧并刷新顶栏，更新耗时显示
+    def _refresh_header_clock(self) -> None:
+        if self._run_started_at is not None:
+            self._spinner_index += 1
+        if self._busy or self._run_started_at is not None:
+            self._refresh_header()
 
     # 根据连接和运行状态刷新顶部标题与欢迎面板
     def _update_header(self, state: str) -> None:
+        self._header_state = state
         self._update_welcome(state)
+        self._refresh_header()
 
-        try:
-            header = self.query_one("#header", Label)
-        except NoMatches:
-            return
-
-        session = f"  [dim]{self._session_id}[/dim]" if self._session_id else ""
-        color = {
-            "ready": "green",
-            "running": "yellow",
-            "disconnected": "red",
-            "connecting": "dim",
-        }.get(state, "dim")
-
-        header.update(
-            f"[bold]MiniClaude[/bold]  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}  [{color}]{state}[/{color}]"
+    # 顶栏状态徽章：圆点 + 彩色背景块，颜色随连接/运行状态变化
+    def _status_badge(self) -> str:
+        label, color = self._STATE_STYLE.get(
+            self._header_state, (self._header_state, "dim")
         )
+        if color == "dim":
+            return f"[dim]{label}[/dim]"
+        return f"[bold black on {color}] ● {label} [/]"
+
+    # 顶栏左半：品牌 + 状态徽章 + 会话（地址已在欢迎面板展示，窄屏优先截断此段）
+    def _header_left_markup(self) -> str:
+        parts = ["[bold]MiniClaude[/bold]", self._status_badge()]
+        if self._session_id:
+            parts.append(f"[dim]{self._session_id}[/dim]")
+        return "  ".join(parts)
+
+    # 顶栏右半：运行中 spinner/step/耗时 + 上下文迷你进度条（或模型名）
+    def _header_right_markup(self) -> str:
+        parts: list[str] = []
+        if self._run_started_at is not None:
+            elapsed = time.monotonic() - self._run_started_at
+            spinner = self._SPINNER[self._spinner_index % len(self._SPINNER)]
+            parts.append(
+                f"[yellow]{spinner}[/yellow] "
+                f"[dim]step {self._current_step} · {elapsed:.1f}s[/dim]"
+            )
+        if self._last_context_pct > 0:
+            parts.append(self._ctx_gauge(self._last_context_pct))
+        elif self._model:
+            parts.append(f"[dim]{self._model}[/dim]")
+        return "   ".join(parts)
+
+    # 顶栏用 8 格迷你进度条展示上下文占用；70%/85% 分档着色
+    @classmethod
+    def _ctx_gauge(cls, pct: float) -> str:
+        filled = round(max(0.0, min(pct, 1.0)) * cls._CTX_CELLS)
+        bar = "▓" * filled + "░" * (cls._CTX_CELLS - filled)
+        if pct >= 0.85:
+            color = "bold red"
+        elif pct >= 0.70:
+            color = "yellow"
+        else:
+            color = "dim"
+        return f"[{color}]{bar} {pct * 100:.0f}%[/{color}]"
+
+    # 将左右两段顶栏文案写入 Label；未挂载时静默跳过
+    def _refresh_header(self) -> None:
+        try:
+            left = self.query_one("#header-left", Label)
+            right = self.query_one("#header-right", Label)
+        except Exception:  # NoMatches / ScreenStackError（App 未挂载）
+            return
+        left.update(self._header_left_markup())
+        right.update(self._header_right_markup())
 
     # 将最新连接状态同步到欢迎面板；未挂载时静默跳过
     def _update_welcome(self, state: str) -> None:
@@ -523,6 +689,7 @@ class MiniClaudeTuiApp(App[None]):
         tips.add_column(style="dim")
         tips.add_row("/", "浏览命令与 skills")
         tips.add_row("Enter", "发送消息 · Shift/Alt/⌘+Enter 换行")
+        tips.add_row("Esc", "中断正在执行的 run")
         tips.add_row("Ctrl+Q", "退出")
 
         body = Group(
@@ -538,16 +705,14 @@ class MiniClaudeTuiApp(App[None]):
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
     async def _socket_loop(self) -> None:
-        header = self.query_one("#header", Label)
-
         while True:
             client = SocketClient(self._host, self._port)
             self._client = None
             try:
                 await client.connect()
             except (ConnectionRefusedError, OSError):
-                header.update("[bold]MiniClaude[/bold]  [red]not connected — retrying...[/red]")
-                self._update_welcome("disconnected")
+                self._set_prompt_state("disconnected")
+                self._update_header("disconnected")
                 await asyncio.sleep(2)
                 continue
 
@@ -631,12 +796,7 @@ class MiniClaudeTuiApp(App[None]):
                     )
                     logger.info("session created session_id=%s", self._session_id)
 
-                prompt = self._prompt()
-                if prompt is not None:
-                    prompt.disabled = False
-                    prompt.read_only = False
-                    prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                    prompt.focus()
+                self._set_prompt_state("ready", focus=True)
                 self._update_header("ready")
 
                 await loop_task
@@ -651,12 +811,11 @@ class MiniClaudeTuiApp(App[None]):
                         f"[dim]{escape(msg)}[/dim]",
                         classes="log-line",
                     ))
-                    header.update(
-                        "[bold]MiniClaude[/bold]  [red]resume failed — check session id[/red]"
-                    )
                 else:
-                    header.update(f"[bold]MiniClaude[/bold]  [red]subscribe error: {e}[/red]")
-                self._update_welcome("disconnected")
+                    self._append(Static(
+                        f"[red]subscribe error: {e}[/red]", classes="log-line"
+                    ))
+                self._update_header("disconnected")
             except asyncio.CancelledError:
                 # pending RPC future 被取消 = 连接在等待响应时断开：按断连处理并继续重连；
                 # 若是 worker 被主动取消（应用退出），继续向上传播
@@ -670,20 +829,12 @@ class MiniClaudeTuiApp(App[None]):
                 self._client = None
                 self._session_id = None
 
-                prompt = self._prompt()
-                if prompt is not None:
-                    prompt.disabled = True
-                    prompt.read_only = False
-                    prompt.border_title = (
-                        "resume failed — press Ctrl+Q to quit"
-                        if fatal
-                        else "disconnected, retrying..."
-                    )
+                self._set_prompt_state("resume_failed" if fatal else "disconnected")
 
                 self._reset_session_state()
                 await client.close()
 
-            self._update_header("disconnected")
+            self._update_header("resume_failed" if fatal else "disconnected")
             if fatal:
                 return
             await asyncio.sleep(2)
@@ -731,21 +882,19 @@ class MiniClaudeTuiApp(App[None]):
 
         if t == "session.waiting_for_input":
             self._busy = False
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = False
-                prompt.read_only = False
-                prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
-                prompt.focus()
+            self._run_started_at = None
+            self._current_step = 0
+            self._cancel_requested = False
+            self._set_prompt_state("ready", focus=True)
             self._update_header("ready")
 
         elif t == "session.closed":
             self._busy = False
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = True
-                prompt.read_only = False
-                prompt.border_title = "session closed"
+            self._run_started_at = None
+            self._current_step = 0
+            self._cancel_requested = False
+            self._discard_pending_permissions()
+            self._set_prompt_state("closed")
             self._update_header("disconnected")
 
         elif t == "run.started":
@@ -755,6 +904,12 @@ class MiniClaudeTuiApp(App[None]):
                 f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{escape(_preview(goal, 96))}[/dim]",
                 classes="run-header",
             ))
+            # 回放历史时不进入运行态，避免残留 step/耗时显示
+            if not self._replaying:
+                self._run_started_at = time.monotonic()
+                self._current_step = 0
+                self._cancel_requested = False
+                self._update_header("running")
 
         elif t == "skill.invoked":
             skill_name = str(event.get("skill_name", ""))
@@ -801,6 +956,9 @@ class MiniClaudeTuiApp(App[None]):
             if run_id in self._subagent_run_ids:
                 return
             step = event.get("step", "")
+            if not self._replaying:
+                self._current_step = int(step or 0)
+                self._refresh_header()
             self._append(Static(
                 f"[dim]step {step}[/dim]",
                 classes="step-divider",
@@ -837,7 +995,26 @@ class MiniClaudeTuiApp(App[None]):
             status = event.get("status", "")
             steps = event.get("steps", 0)
             reason = event.get("reason") or ""
-            if status == "success":
+            cancelled = reason == "cancelled"
+
+            # 终态到达：清除运行态并恢复输入框（chat 模式随后还会收到 waiting_for_input）。
+            # 回放历史时不触碰当前输入/连接状态
+            if not self._replaying:
+                self._busy = False
+                self._run_started_at = None
+                self._current_step = 0
+                self._cancel_requested = False
+                if cancelled:
+                    self._discard_pending_permissions()
+                self._set_prompt_state("ready", focus=True)
+                self._update_header("ready")
+
+            if cancelled:
+                self._append(Static(
+                    f"[bold yellow]■ 已中断[/bold yellow]  [dim]{steps} steps[/dim]",
+                    classes="run-err",
+                ))
+            elif status == "success":
                 self._append(Static(
                     f"[bold green]✓ completed[/bold green]  [dim]{steps} steps[/dim]",
                     classes="run-ok",
@@ -855,6 +1032,8 @@ class MiniClaudeTuiApp(App[None]):
                 return
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
+            if not self._replaying:
+                self._refresh_header()
             ctx_bar = self._render_ctx_bar(pct)
 
             self._append(Static(
@@ -904,10 +1083,7 @@ class MiniClaudeTuiApp(App[None]):
             if self._replaying:
                 return
 
-            prompt = self._prompt()
-            if prompt is not None:
-                prompt.disabled = True
-                prompt.border_title = "permission required"
+            self._set_prompt_state("permission")
 
             select = PermissionSelect(tool_use_id, risk_level)
             self._mount_permission_select(select)

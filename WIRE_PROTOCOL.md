@@ -108,6 +108,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 |---|---|---|
 | `type` | `string` | no |
 | `goal` | `string` | yes |
+| `workspace` | `string` | yes |
 
 ```json
 {
@@ -121,10 +122,15 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     "goal": {
       "title": "Goal",
       "type": "string"
+    },
+    "workspace": {
+      "title": "Workspace",
+      "type": "string"
     }
   },
   "required": [
-    "goal"
+    "goal",
+    "workspace"
   ],
   "title": "AgentRunCommand",
   "type": "object"
@@ -139,7 +145,8 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   "id": "u-2",
   "method": "agent.run",
   "params": {
-    "goal": "\u603b\u7ed3 README.md \u7684\u4e3b\u8981\u7ae0\u8282"
+    "goal": "\u603b\u7ed3 README.md \u7684\u4e3b\u8981\u7ae0\u8282",
+    "workspace": "/path/to/project"
   }
 }
 ```
@@ -312,6 +319,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `mode` | `string` | no |
 | `title` | `string` | no |
 | `session_id` | `string | null` | no |
+| `workspace` | `string` | yes |
 
 ```json
 {
@@ -348,8 +356,15 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       ],
       "default": null,
       "title": "Session Id"
+    },
+    "workspace": {
+      "title": "Workspace",
+      "type": "string"
     }
   },
+  "required": [
+    "workspace"
+  ],
   "title": "SessionCreateCommand",
   "type": "object"
 }
@@ -364,7 +379,8 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   "method": "session.create",
   "params": {
     "mode": "chat",
-    "title": ""
+    "title": "",
+    "workspace": "/path/to/project"
   }
 }
 ```
@@ -559,6 +575,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 |---|---|---|
 | `type` | `string` | no |
 | `session_id` | `string` | yes |
+| `workspace` | `string` | yes |
 
 ```json
 {
@@ -573,10 +590,15 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       "pattern": "^[A-Za-z0-9_-]{1,64}$",
       "title": "Session Id",
       "type": "string"
+    },
+    "workspace": {
+      "title": "Workspace",
+      "type": "string"
     }
   },
   "required": [
-    "session_id"
+    "session_id",
+    "workspace"
   ],
   "title": "SessionResumeCommand",
   "type": "object"
@@ -591,7 +613,8 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   "id": "u-8",
   "method": "session.resume",
   "params": {
-    "session_id": "sess-abc123def456"
+    "session_id": "sess-abc123def456",
+    "workspace": "/path/to/project"
   }
 }
 ```
@@ -603,6 +626,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `session_id` | `string` | yes |
 | `status` | `string` | yes |
 | `run_count` | `integer` | no |
+| `workspace` | `string` | no |
 
 ```json
 {
@@ -624,6 +648,11 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       "default": 0,
       "title": "Run Count",
       "type": "integer"
+    },
+    "workspace": {
+      "default": "",
+      "title": "Workspace",
+      "type": "string"
     }
   },
   "required": [
@@ -755,7 +784,8 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   "method": "permission.respond",
   "params": {
     "tool_use_id": "toolu_01",
-    "decision": "allow_once"
+    "decision": "allow_once",
+    "session_id": "sess-abc123def456"
   }
 }
 ```
@@ -878,6 +908,80 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
   "result": {
     "summary_tokens": 1200,
     "saved_tokens": 18000
+  }
+}
+```
+
+### RunCancelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "run.cancel",
+      "default": "run.cancel",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "RunCancelCommand",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-9",
+  "method": "run.cancel",
+  "params": {
+    "session_id": "sess-abc123def456"
+  }
+}
+```
+
+### RunCancelResult
+
+| Field | Type | Required |
+|---|---|---|
+| `cancelled` | `boolean` | no |
+
+```json
+{
+  "properties": {
+    "cancelled": {
+      "default": false,
+      "title": "Cancelled",
+      "type": "boolean"
+    }
+  },
+  "title": "RunCancelResult",
+  "type": "object"
+}
+```
+
+**Example:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "u-9",
+  "result": {
+    "cancelled": true
   }
 }
 ```
