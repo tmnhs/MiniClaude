@@ -200,3 +200,62 @@ async def test_run_task_exception_publishes_failed_event() -> None:
     assert finished[0].status == "failed"
     assert finished[0].reason.startswith("run_task_error:")
     assert finished[0].run_id
+
+
+# 功能：验证 run.cancel 取消登记中的 run 任务并返回 cancelled=True
+# 设计：登记一个长眠任务到 _active_runs，调用 handler 后断言任务被取消
+async def test_run_cancel_cancels_active_run() -> None:
+    started = asyncio.Event()
+
+    async def _long_running() -> None:
+        started.set()
+        await asyncio.sleep(60)
+
+    app = CoreApp()
+    task = asyncio.create_task(_long_running())
+    app._active_runs["sess-1"] = task
+    await started.wait()
+
+    result = await app._run_cancel_handler({"session_id": "sess-1"})
+
+    assert result.cancelled is True
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+
+
+# 功能：验证无运行中 run 时 run.cancel 返回 cancelled=False
+# 设计：空 _active_runs 直接调用 handler，确保不会误报取消成功
+async def test_run_cancel_without_active_run_returns_false() -> None:
+    app = CoreApp()
+
+    result = await app._run_cancel_handler({"session_id": "sess-none"})
+
+    assert result.cancelled is False
+
+
+# 功能：验证 run.cancel 取消内层 send_message 后，RPC handler 仍返回结果而非被取消
+# 设计：fake send_message 长时间挂起，模拟取消流程；断言 handler 正常返回空 run_id，
+#       避免客户端 pending 请求永久挂起
+async def test_session_send_handler_survives_run_cancel() -> None:
+    class _FakeSessions:
+        async def send_message(self, sid: str, content: str) -> str:
+            await asyncio.sleep(60)
+            return "run-never"
+
+    app = CoreApp()
+    app._sessions = _FakeSessions()  # type: ignore[assignment]
+
+    handler = asyncio.create_task(
+        app._session_send_handler({"session_id": "sess-1", "content": "hi"})
+    )
+    for _ in range(200):
+        if "sess-1" in app._active_runs:
+            break
+        await asyncio.sleep(0.01)
+
+    cancel = await app._run_cancel_handler({"session_id": "sess-1"})
+    result = await asyncio.wait_for(handler, timeout=2.0)
+
+    assert cancel.cancelled is True
+    assert result.run_id == ""
+    assert "sess-1" not in app._active_runs

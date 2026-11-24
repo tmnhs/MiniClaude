@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from rich.console import Console
@@ -11,6 +12,7 @@ from rich.text import Text
 from textual import events
 from textual._context import NoActiveAppError
 from textual.app import ComposeResult
+from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
@@ -19,9 +21,27 @@ from textual.widgets import Static, TextArea
 
 log = logging.getLogger(__name__)
 
+# 流式 token 合并刷新的最小间隔（秒），避免每个 token 都触发布局与重绘
+_TOKEN_FLUSH_INTERVAL = 0.05
+
 
 def _preview(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
+
+
+class LogView(VerticalScroll):
+    """事件日志滚动容器：滚动位置变化时通知 App，用于决定是否自动跟随底部。"""
+
+    # 滚动位置更新后发布，at_end 表示当前是否已滚到最底部
+    class Scrolled(Message):
+        def __init__(self, at_end: bool) -> None:
+            self.at_end = at_end
+            super().__init__()
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if self.is_attached:
+            self.post_message(self.Scrolled(self.is_vertical_scroll_end))
 
 
 def _params_str(params: dict[str, Any]) -> str:
@@ -57,13 +77,27 @@ class LLMStreamBlock(Static):
         super().__init__("")
         self._text = ""
         self._finalized = False
+        self._last_flush = 0.0
+        self._flush_scheduled = False
 
-    # 追加一个 token 并刷新显示
+    # 追加一个 token；按固定间隔合并刷新，流结束时由 finalize 统一收尾
     def append_token(self, token: str) -> None:
         if self._finalized:
             return
 
         self._text += token
+        if time.monotonic() - self._last_flush >= _TOKEN_FLUSH_INTERVAL:
+            self._flush()
+        elif not self._flush_scheduled and self.is_attached:
+            self._flush_scheduled = True
+            self.set_timer(_TOKEN_FLUSH_INTERVAL, self._flush)
+
+    # 将当前累积文本写入显示区；定时器与即时刷新共用
+    def _flush(self) -> None:
+        self._flush_scheduled = False
+        if self._finalized:
+            return
+        self._last_flush = time.monotonic()
         self.update(self._text)
 
     # 当前已累积的纯文本
@@ -261,7 +295,7 @@ class ChatTextArea(TextArea):
 
     # 子类自定义的提交消息，供宿主 App 监听
     class Submitted(Message):
-        def __init__(self, area: "ChatTextArea") -> None:
+        def __init__(self, area: ChatTextArea) -> None:
             self.text_area = area
             self.value = area.text
             super().__init__()
@@ -271,6 +305,53 @@ class ChatTextArea(TextArea):
         def __init__(self, query: str | None) -> None:
             self.query = query
             super().__init__()
+
+    # 初始化输入历史：已提交内容、当前浏览位置（None 表示正在编辑草稿）、进入历史前的草稿
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._history: list[str] = []
+        self._history_index: int | None = None
+        self._history_draft = ""
+
+    # 记录一次已提交的输入，并重置历史浏览位置（连续重复输入只保留一条）
+    def _remember(self, content: str) -> None:
+        if content and (not self._history or self._history[-1] != content):
+            self._history.append(content)
+        self._history_index = None
+        self._history_draft = ""
+
+    # 将历史条目载入输入框，并把光标移到末尾
+    def _load_history(self, value: str) -> None:
+        self.load_text(value)
+        last_row = value.count("\n")
+        self.move_cursor((last_row, len(value) - value.rfind("\n") - 1))
+
+    # 切换到更早的输入；没有历史时返回 False 交由 TextArea 正常处理
+    def _history_back(self) -> bool:
+        if not self._history:
+            return False
+        if self._history_index is None:
+            self._history_draft = self.text
+            self._history_index = len(self._history) - 1
+        elif self._history_index > 0:
+            self._history_index -= 1
+        else:
+            return True  # 已到最早一条，保持当前内容
+        self._load_history(self._history[self._history_index])
+        return True
+
+    # 切换到更晚的输入；越过最新一条时恢复进入历史前编辑的草稿
+    def _history_forward(self) -> bool:
+        if self._history_index is None:
+            return False
+        if self._history_index < len(self._history) - 1:
+            self._history_index += 1
+            self._load_history(self._history[self._history_index])
+        else:
+            self._history_index = None
+            self._load_history(self._history_draft)
+            self._history_draft = ""
+        return True
 
     # 文本变化时检测 / 前缀，通知宿主 App 更新自动补全弹窗
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
@@ -296,7 +377,9 @@ class ChatTextArea(TextArea):
             if popup is not None and popup.has_selection():
                 popup.select_current()
                 return
-            if self.text.strip():
+            content = self.text.strip()
+            if content:
+                self._remember(content)
                 self.post_message(self.Submitted(self))
             return
 
@@ -328,6 +411,17 @@ class ChatTextArea(TextArea):
                 event.prevent_default()
                 self.post_message(ChatTextArea.SlashChanged(query=None))
                 return
+
+        # 光标位于首行时 ↑ 翻历史，位于末行时 ↓ 翻历史；其余情况保留多行文本内的正常移动
+        if key == "up" and self.cursor_location[0] == 0 and self._history_back():
+            event.stop()
+            event.prevent_default()
+            return
+        on_last_line = self.cursor_location[0] == self.text.count("\n")
+        if key == "down" and on_last_line and self._history_forward():
+            event.stop()
+            event.prevent_default()
+            return
 
         await super()._on_key(event)
 
@@ -361,7 +455,7 @@ class PermissionSelect(Static):
     # 用户作出权限决策时发布，携带工具 ID 和决策字符串
     class Decided(Message):
         # 初始化决策消息，存储控件引用、工具 ID 和决策
-        def __init__(self, widget: "PermissionSelect", tool_use_id: str, decision: str) -> None:
+        def __init__(self, widget: PermissionSelect, tool_use_id: str, decision: str) -> None:
             self.widget = widget
             self.tool_use_id = tool_use_id
             self.decision = decision
@@ -404,7 +498,11 @@ class PermissionSelect(Static):
 
     # 焦点到达时记录，用于确认 focus() 是否真正生效
     def on_focus(self, event: events.Focus) -> None:
-        log.debug("PermissionSelect.on_focus  has_focus=%s  app.focused=%r", self.has_focus, self.app.focused)
+        log.debug(
+            "PermissionSelect.on_focus  has_focus=%s  app.focused=%r",
+            self.has_focus,
+            self.app.focused,
+        )
 
     # 焦点离开时记录，用于追踪是否被其他控件抢走焦点
     def on_blur(self, event: events.Blur) -> None:
@@ -458,12 +556,13 @@ class PermissionBlock(Static):
         "deny_once":    "denied",
         "always_deny":  "always denied",
         "timeout":      "⏱ timed out",
+        "cancelled":    "cancelled",
     }
     LABEL_MAP = _LABEL_MAP
 
     # 子类提交消息：用户作出权限决策时发布
     class Resolved(Message):
-        def __init__(self, block: "PermissionBlock", decision: str) -> None:
+        def __init__(self, block: PermissionBlock, decision: str) -> None:
             self.block = block
             self.decision = decision
             super().__init__()

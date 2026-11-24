@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from rich.text import Text
@@ -219,6 +220,99 @@ def test_run_finished_failed_shows_red() -> None:
     rendered = widgets[0].content
     assert "failed" in rendered
     assert "red" in rendered
+
+
+# 功能：验证 run.started 进入运行态并记录起始时间，供顶栏展示 step/耗时
+# 设计：只断言运行态字段与 header 状态，时间轴不断言具体数值避免时钟依赖
+def test_run_started_enters_running_state() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    _collect(app)
+
+    app._handle_event({"type": "run.started", "run_id": "r", "goal": "g", "ts": "t"})
+
+    assert app._run_started_at is not None  # type: ignore[attr-defined]
+    assert app._current_step == 0  # type: ignore[attr-defined]
+    assert app._header_state == "running"  # type: ignore[attr-defined]
+
+
+# 功能：验证 run.finished(cancelled) 显示"已中断"，清除运行态并丢弃待审批
+# 设计：预置 busy/step/pending 审批，发送 reason=cancelled 的终态，逐项断言已复位
+def test_run_finished_cancelled_resets_state() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    widgets = _collect(app)
+    app._busy = True
+    app._run_started_at = 123.0  # type: ignore[attr-defined]
+    app._current_step = 4  # type: ignore[attr-defined]
+    app._pending_permission_blocks["u1"] = PermissionBlock("u1", "bash", "ls")  # type: ignore[assignment]
+
+    app._handle_event({
+        "type": "run.finished", "run_id": "r", "status": "failed",
+        "reason": "cancelled", "steps": 4, "ts": "t",
+    })
+
+    assert app._busy is False
+    assert app._run_started_at is None  # type: ignore[attr-defined]
+    assert app._current_step == 0  # type: ignore[attr-defined]
+    assert app._pending_permission_blocks == {}
+    assert "run-err" in widgets[0].classes
+    assert "已中断" in widgets[0].content
+
+
+# 功能：验证顶栏在运行中展示 step/耗时，并按上下文占用率着色
+# 设计：直接设置状态字段后调用 _header_markup，覆盖高占用（bold red）分支
+def test_header_markup_includes_step_and_context() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999, model="m")
+    app._session_id = "sess-A"
+    app._header_state = "running"  # type: ignore[attr-defined]
+    app._run_started_at = time.monotonic()  # type: ignore[attr-defined]
+    app._current_step = 3  # type: ignore[attr-defined]
+    app._last_context_pct = 0.9  # type: ignore[attr-defined]
+
+    markup = app._header_markup()
+
+    assert "运行中" in markup
+    assert "sess-A" in markup
+    assert "step 3" in markup
+    assert "ctx 90%" in markup
+    assert "bold red" in markup
+
+
+# 功能：验证空闲时 Esc 不触发中断，避免无谓的 RPC
+# 设计：_busy=False 时替换 run_worker 捕获调用，断言未被调用
+def test_action_cancel_run_ignored_when_idle() -> None:
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._client = object()  # type: ignore[assignment]
+    app._session_id = "sess-A"
+    scheduled: list[Any] = []
+    app.run_worker = lambda *a, **kw: scheduled.append(a)  # type: ignore[method-assign]
+
+    app.action_cancel_run()
+
+    assert scheduled == []
+
+
+# 功能：验证中断请求发送 run.cancel 并携带当前 session_id
+# 设计：fake client 记录命令，直接 await _do_cancel_run 避免调度 worker
+async def test_do_cancel_run_sends_command() -> None:
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        async def send_command(self, method: str, params: dict) -> dict:
+            self.calls.append((method, params))
+            return {"cancelled": True}
+
+    app = MiniClaudeTuiApp("127.0.0.1", 9999)
+    app._append = lambda widget: None  # type: ignore[method-assign]
+    client = _FakeClient()
+    app._client = client  # type: ignore[assignment]
+    app._session_id = "sess-A"
+    app._busy = True
+    app._cancel_requested = True  # type: ignore[attr-defined]
+
+    await app._do_cancel_run()
+
+    assert client.calls == [("run.cancel", {"session_id": "sess-A"})]
 
 
 # 功能：验证 tool.call_started 追加 ToolCallBlock，call_finished 更新其结果
@@ -444,7 +538,8 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
     assert app._busy
     assert area.disabled
     assert area.text == ""
-    assert "agent is working" in area.border_title.lower()
+    assert "agent" in area.border_title.lower()
+    assert "esc" in area.border_title.lower()
     assert widgets[0].content == "[bold]>[/bold] hello"
 
 
