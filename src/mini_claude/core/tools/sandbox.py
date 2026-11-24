@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from mini_claude.core.conf.model import SandboxConfig
@@ -41,9 +42,31 @@ def _denied_read_roots() -> list[Path]:
     return sorted(roots)
 
 
+# 生成允许路径的祖先目录元数据读规则。
+def _ancestor_read_rules(paths: list[str]) -> list[str]:
+    rules: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        for parent in Path(raw).parents:
+            key = str(parent)
+            if key in seen:
+                continue
+            seen.add(key)
+            rules.append(f'(allow file-read-metadata (literal "{_sbpl_escape(key)}"))')
+    return rules
+
+
+# 允许写入的系统临时目录：TMPDIR、/tmp、/var/tmp。
+def _temp_write_roots() -> list[Path]:
+    candidates = {Path(tempfile.gettempdir()), Path("/tmp"), Path("/var/tmp")}
+    return sorted({p.resolve() for p in candidates if p.exists()})
+
+
 # 构造 macOS sandbox-exec 的 SBPL profile。
 # 采用「allow default + 定向 deny」：SBPL 中后匹配规则优先，
-# 因此先禁止家目录读取/全局写入，再放行工作区与配置的额外路径。
+# 因此先禁止家目录读取/全局写入，再放行工作区、配置的额外路径与系统临时目录。
+# 放行路径必须同时放行其祖先目录的元数据读权限，否则 realpath/canonicalize
+# 在祖先被 deny 时会返回 EPERM（见 _ancestor_read_rules）。
 # 注意：路径必须是 resolve() 后的真实路径（如 /tmp → /private/tmp），否则规则不生效。
 def _darwin_profile(workspace: Path, cfg: SandboxConfig) -> str:
     readable = [str(workspace)] + [
@@ -57,9 +80,18 @@ def _darwin_profile(workspace: Path, cfg: SandboxConfig) -> str:
     for root in _denied_read_roots():
         rules.append(f"(deny file-read* {_subpath(root)})")
     rules.extend(f"(allow file-read* {_subpath(p)})" for p in readable)
+    rules.extend(_ancestor_read_rules(readable + writable))
 
     rules.append('(deny file-write* (subpath "/"))')
     rules.extend(f"(allow file-write* {_subpath(p)})" for p in writable)
+    # 仅配置 allow_write 的路径也需要能 stat 自身，否则工具的存在性检查
+    # 会因 EPERM 误判为不存在，随后 mkdir 得到 EEXIST（uv 缓存即如此）
+    rules.extend(
+        f'(allow file-read-metadata (literal "{_sbpl_escape(p)}"))' for p in writable
+    )
+    rules.extend(
+        f"(allow file-write* {_subpath(p)})" for p in _temp_write_roots()
+    )
     rules.append(
         '(allow file-write* (literal "/dev/null") (literal "/dev/stdout") '
         '(literal "/dev/stderr") (literal "/dev/tty"))'
@@ -72,7 +104,8 @@ def _darwin_profile(workspace: Path, cfg: SandboxConfig) -> str:
 
 
 # 构造 Linux bubblewrap 的 argv。
-# 以只读根目录 + 可写工作区实现写隔离；strict 追加 --unshare-net 禁用网络。
+# 以只读根目录 + 可写工作区实现写隔离；系统临时目录额外可写（uv 等依赖 TMPDIR）；
+# strict 追加 --unshare-net 禁用网络。
 # 注意：Linux 端读取范围仍为全盘（ro-bind /），与 macOS 的家目录读隔离存在平台差异。
 def _linux_argv(command: str, workspace: Path, cfg: SandboxConfig) -> list[str]:
     argv = [
@@ -86,6 +119,8 @@ def _linux_argv(command: str, workspace: Path, cfg: SandboxConfig) -> list[str]:
     for raw in cfg.allow_write:
         extra = str(_resolve_extra(raw, workspace))
         argv.extend(["--bind", extra, extra])
+    for tmp in _temp_write_roots():
+        argv.extend(["--bind", str(tmp), str(tmp)])
     argv.extend(["--dev", "/dev", "--proc", "/proc", "--chdir", str(workspace)])
     if cfg.mode == "strict":
         argv.append("--unshare-net")
