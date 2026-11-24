@@ -36,6 +36,9 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
         "list_dir": ("path", "max_depth"),
         "bash": ("command",),
         "note_save": ("content",),
+        "grep": ("pattern", "path"),
+        "glob": ("pattern", "path"),
+        "git": ("subcommand",),
     }
     keys = keys_by_tool.get(tool_name, ())
     parts = [f"{key}={params[key]!r}" for key in keys if key in params]

@@ -29,6 +29,9 @@ from mini_claude.core.task.manager import TaskManager
 from mini_claude.core.tools.builtin import (
     BashTool,
     EditFileTool,
+    GitTool,
+    GlobTool,
+    GrepTool,
     ListDirTool,
     NoteSaveTool,
     ReadFileTool,
@@ -111,6 +114,9 @@ class AgentRunner:
             WriteFileTool(),
             EditFileTool(),
             ListDirTool(),
+            GrepTool(),
+            GlobTool(),
+            GitTool(),
         ]:
             if _ok(t.name):
                 registry.register(t)

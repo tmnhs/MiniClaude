@@ -13,6 +13,7 @@ from mini_claude.core.permissions.policy import (
     DEFAULT_POLICIES,
     PermissionDecision,
     ToolPolicy,
+    default_decision,
     param_preview,
 )
 from mini_claude.core.permissions.store import load_policy_file, save_policy_file
@@ -104,13 +105,13 @@ class PermissionManager:
                     if re.search(pat, command):
                         return True, "auto_allow"
 
-            # 第 5 层：工具默认策略
-            if policy is not None:
-                if policy.default == PermissionDecision.ALLOW:
-                    return True, "auto_allow"
-                if policy.default == PermissionDecision.DENY:
-                    return False, "auto_deny"
-            # default == ASK（bash、未知工具）→ 落入 Future 等待路径
+            # 第 5 层：工具默认策略（git 只读子命令在此自动放行）
+            decision = default_decision(tool_name, params, policy)
+            if decision == PermissionDecision.ALLOW:
+                return True, "auto_allow"
+            if decision == PermissionDecision.DENY:
+                return False, "auto_deny"
+            # ASK（bash、git 变更、未知工具）→ 落入 Future 等待路径
 
         # ASK 路径（来自 outside-cwd / 高风险，或 default=ASK）
         loop = asyncio.get_event_loop()

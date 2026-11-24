@@ -645,3 +645,154 @@ async def test_high_risk_event_marks_high() -> None:
     await task
 
     assert emitted[0]["risk_level"] == "high"
+
+
+# ── git / grep 权限集成 ──────────────────────────────────────────────────────
+
+# 功能：git 只读子命令自动放行且不发审批事件
+# 设计：default_decision 把 status 提升为 ALLOW，走无噪声放行路径
+async def test_git_readonly_auto_allow_no_event() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="g1", tool_name="git",
+        params={"subcommand": "status"}, session_id="s1",
+        event_emitter=emitter,
+    )
+
+    assert allowed is True
+    assert decision == "auto_allow"
+    assert emitted == []
+
+
+# 功能：git commit 发出中风险审批事件并展示 subcommand 摘要
+# 设计：变更子命令默认 ASK；risk_level=medium，param_preview 展示 subcommand
+async def test_git_commit_asks_with_medium_risk() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_allow() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("g2", "allow_once", session_id="s1")
+
+    task = asyncio.create_task(_auto_allow())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="g2", tool_name="git",
+        params={"subcommand": "commit", "message": "x"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    assert allowed is True
+    assert decision == "allow_once"
+    assert len(emitted) == 1
+    assert emitted[0]["risk_level"] == "medium"
+    assert emitted[0]["param_preview"] == "subcommand='commit'"
+
+
+# 功能：git commit 的 always_allow 可缓存，同子命令二次调用不再 ASK
+# 设计：medium 风险允许缓存，第二次命中 (git, "git commit") 缓存
+async def test_git_commit_always_allow_is_cached() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("g3", "always_allow", session_id="s1")
+
+    task = asyncio.create_task(_auto_always())
+    await mgr.check_and_wait(
+        tool_use_id="g3", tool_name="git",
+        params={"subcommand": "commit", "message": "x"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="g4", tool_name="git",
+        params={"subcommand": "commit", "message": "y"}, session_id="s1",
+        event_emitter=emitter,
+    )
+
+    assert allowed is True
+    assert decision == "auto_allow"
+    assert len(emitted) == 1
+
+
+# 功能：git restore 为高风险，always_allow 不缓存，二次调用仍 ASK
+# 设计：丢弃未提交改动不可恢复，高风险 always_allow 只放行一次
+async def test_git_restore_always_allow_not_cached() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_always() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("g5", "always_allow", session_id="s1")
+
+    task = asyncio.create_task(_auto_always())
+    r1, _ = await mgr.check_and_wait(
+        tool_use_id="g5", tool_name="git",
+        params={"subcommand": "restore"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+    assert r1 is True
+
+    async def _auto_allow_once() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("g6", "allow_once", session_id="s1")
+
+    task2 = asyncio.create_task(_auto_allow_once())
+    r2, d2 = await mgr.check_and_wait(
+        tool_use_id="g6", tool_name="git",
+        params={"subcommand": "restore"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task2
+
+    assert r2 is True
+    assert d2 == "allow_once"
+    assert len(emitted) == 2
+    assert emitted[0]["risk_level"] == "high"
+
+
+# 功能：grep 普通路径自动放行且无事件
+# 设计：只读搜索默认 ALLOW，降低权限疲劳
+async def test_grep_normal_path_auto_allow(tmp_path: Path) -> None:
+    mgr = PermissionManager(workspace=tmp_path)
+    emitted, emitter = await _collect_emitted()
+
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="gr1", tool_name="grep",
+        params={"pattern": "x"}, session_id="s1",
+        event_emitter=emitter,
+    )
+
+    assert allowed is True
+    assert decision == "auto_allow"
+    assert emitted == []
+
+
+# 功能：grep 敏感目标路径强制 ASK 并标记 high
+# 设计：搜索 .git 等高敏目录时，即使策略默认 ALLOW 也必须审批
+async def test_grep_sensitive_path_asks(tmp_path: Path) -> None:
+    mgr = PermissionManager(workspace=tmp_path)
+    emitted, emitter = await _collect_emitted()
+
+    async def _auto_allow() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("gr2", "allow_once", session_id="s1")
+
+    task = asyncio.create_task(_auto_allow())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="gr2", tool_name="grep",
+        params={"pattern": "x", "path": ".git/config"}, session_id="s1",
+        event_emitter=emitter,
+    )
+    await task
+
+    assert allowed is True
+    assert decision == "allow_once"
+    assert len(emitted) == 1
+    assert emitted[0]["risk_level"] == "high"

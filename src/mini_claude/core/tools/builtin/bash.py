@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import os
-import signal
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +11,7 @@ from mini_claude.core.tools.limits import (
     MAX_BASH_OUTPUT_BYTES,
     MAX_BASH_TIMEOUT,
 )
+from mini_claude.core.tools.process import run_process
 from mini_claude.core.tools.sandbox import SandboxUnavailableError, build_argv
 
 
@@ -74,44 +72,22 @@ class BashTool(BaseTool):
             )
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=workspace,
-                start_new_session=True,
-            )
-
-            try:
-                stdout_bytes, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout
-                )
-            except TimeoutError:
-                # start_new_session=True 使子进程成为独立进程组，killpg 可清理整个沙箱进程树
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                await proc.communicate()
-                return ToolResult(
-                    content=f"[timeout after {timeout}s]",
-                    is_error=True,
-                    error_type="timeout",
-                )
+            result = await run_process(argv, cwd=workspace, timeout=timeout)
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True, error_type="runtime_error")
 
-        output = stdout_bytes.decode("utf-8", errors="replace")
-        truncated = len(stdout_bytes) > MAX_BASH_OUTPUT_BYTES
-        if truncated:
-            output = output[:MAX_BASH_OUTPUT_BYTES] + "\n[truncated]"
-
-        returncode = proc.returncode or 0
-        if returncode != 0:
+        if result.timed_out:
             return ToolResult(
-                content=f"[exit {returncode}]\n{output}",
+                content=result.output,
+                is_error=True,
+                error_type="timeout",
+            )
+
+        if result.returncode != 0:
+            return ToolResult(
+                content=f"[exit {result.returncode}]\n{result.output}",
                 is_error=True,
                 error_type="runtime_error",
             )
 
-        return ToolResult(content=output or "[no output]")
+        return ToolResult(content=result.output or "[no output]")
