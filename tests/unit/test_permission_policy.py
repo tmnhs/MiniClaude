@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from mini_claude.core.permissions.policy import (
     PermissionDecision,
     ToolPolicy,
@@ -210,3 +212,34 @@ def test_param_preview_truncates_long_value() -> None:
     preview = param_preview("bash", {"command": long_cmd})
     assert len(preview) <= 75  # key='<60 chars>…' overhead ~11 chars
     assert "…" in preview
+
+
+# ── git / grep / glob 默认决策 ────────────────────────────────────────────────
+
+# 功能：git 只读子命令默认 ALLOW（在默认 ASK 基础上提升）
+# 设计：DEFAULT_POLICIES 中 git 为 ASK，default_decision 对只读子命令覆盖为 ALLOW
+@pytest.mark.parametrize("sub", ["status", "diff", "log", "show"])
+def test_git_readonly_default_is_allow(sub: str) -> None:
+    assert evaluate("git", {"subcommand": sub}) == PermissionDecision.ALLOW
+
+
+# 功能：git 变更子命令默认 ASK
+# 设计：add/commit/branch/restore 需要审批
+@pytest.mark.parametrize("sub", ["add", "commit", "branch", "restore"])
+def test_git_mutating_default_is_ask(sub: str) -> None:
+    assert evaluate("git", {"subcommand": sub}) == PermissionDecision.ASK
+
+
+# 功能：grep / glob 默认 ALLOW
+# 设计：只读搜索工具默认放行，减少权限疲劳
+def test_grep_glob_default_allow() -> None:
+    assert evaluate("grep", {"pattern": "TODO"}) == PermissionDecision.ALLOW
+    assert evaluate("glob", {"pattern": "*.py"}) == PermissionDecision.ALLOW
+
+
+# 功能：新工具的 param_preview 展示关键字段
+# 设计：git 展示 subcommand，grep/glob 展示 pattern
+def test_param_preview_new_tools() -> None:
+    assert param_preview("git", {"subcommand": "status"}) == "subcommand='status'"
+    assert param_preview("grep", {"pattern": "TODO"}) == "pattern='TODO'"
+    assert param_preview("glob", {"pattern": "*.py"}) == "pattern='*.py'"

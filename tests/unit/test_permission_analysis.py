@@ -617,3 +617,74 @@ def test_read_tool_outside_is_medium_without_force(tool: str, tmp_path: Path) ->
 def test_file_tool_records_resolved_path(tmp_path: Path) -> None:
     result = analyze_tool("write_file", {"path": "sub/a.txt"}, tmp_path)
     assert result.affected_paths == (str((tmp_path / "sub/a.txt").resolve()),)
+
+
+# ── git / grep / glob 工具分析 ────────────────────────────────────────────────
+
+# 功能：git 只读子命令为低风险，pattern 为「git <sub>」
+# 设计：status/diff/log/show 不修改仓库，无需强制 ASK
+@pytest.mark.parametrize("sub", ["status", "diff", "log", "show"])
+def test_git_readonly_tool_is_low(sub: str) -> None:
+    result = analyze_tool("git", {"subcommand": sub})
+    assert result.risk == "low"
+    assert result.pattern == f"git {sub}"
+    assert result.force_ask is False
+
+
+# 功能：git 变更子命令为可缓存的中风险
+# 设计：add/commit/branch 有副作用但可恢复，不强制 ASK
+@pytest.mark.parametrize("sub", ["add", "commit", "branch"])
+def test_git_mutating_tool_is_medium(sub: str) -> None:
+    result = analyze_tool("git", {"subcommand": sub})
+    assert result.risk == "medium"
+    assert result.pattern == f"git {sub}"
+    assert result.force_ask is False
+
+
+# 功能：git restore 为高风险并强制 ASK
+# 设计：restore 会丢弃未提交改动，always_allow 不应被缓存
+def test_git_restore_tool_is_high() -> None:
+    result = analyze_tool("git", {"subcommand": "restore"})
+    assert result.risk == "high"
+    assert result.force_ask is True
+
+
+# 功能：grep 默认路径为低风险，pattern 为解析后的绝对路径
+# 设计：默认搜索工作区根，缓存按搜索路径隔离
+def test_grep_default_path_is_low(tmp_path: Path) -> None:
+    result = analyze_tool("grep", {"pattern": "x"}, tmp_path)
+    assert result.risk == "low"
+    assert result.outside is False
+    assert result.force_ask is False
+    assert result.pattern == str(tmp_path.resolve())
+
+
+# 功能：grep 搜索敏感目录/文件为高风险并强制 ASK
+# 设计：读取 .git/.ssh/.env 等可能暴露凭据，不能被默认 ALLOW 静默放行
+@pytest.mark.parametrize("path", [".git/config", ".ssh/id_ed25519", ".env"])
+def test_grep_sensitive_path_is_high(path: str, tmp_path: Path) -> None:
+    result = analyze_tool("grep", {"pattern": "x", "path": path}, tmp_path)
+    assert result.risk == "high"
+    assert result.force_ask is True
+
+
+# 功能：grep 越界路径为高风险并强制 ASK
+# 设计：`../x` 落在工作区外，权限层应拦截
+def test_grep_outside_path_is_high(tmp_path: Path) -> None:
+    result = analyze_tool("grep", {"pattern": "x", "path": "../escape"}, tmp_path)
+    assert result.risk == "high"
+    assert result.outside is True
+    assert result.force_ask is True
+
+
+# 功能：glob 沿用只读路径分支：工作区内低风险、越界中风险且不强制 ASK
+# 设计：glob 只读，越界时工具自身会拒绝，权限层不重复打扰
+def test_glob_tool_path_risk(tmp_path: Path) -> None:
+    inside = analyze_tool("glob", {"pattern": "*.py", "path": "."}, tmp_path)
+    assert inside.risk == "low"
+    assert inside.outside is False
+
+    outside = analyze_tool("glob", {"pattern": "*.py", "path": "../escape"}, tmp_path)
+    assert outside.risk == "medium"
+    assert outside.outside is True
+    assert outside.force_ask is False

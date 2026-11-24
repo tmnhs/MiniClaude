@@ -13,6 +13,29 @@ MAX_BASH_OUTPUT_BYTES = 64 * 1024    # bash 最大输出字节数：64 KB
 DEFAULT_BASH_TIMEOUT = 60            # bash 默认超时秒数
 MAX_BASH_TIMEOUT = 120               # bash 最大超时秒数
 
+DEFAULT_GREP_MAX_RESULTS = 200        # grep 默认最大命中数
+MAX_GREP_MAX_RESULTS = 1000           # grep 最大可配置命中数
+DEFAULT_GREP_MAX_LINE_LEN = 300       # grep 单行展示默认截断长度（字符）
+MAX_GREP_MAX_LINE_LEN = 2000          # grep 单行展示最大可配置长度（字符）
+MAX_GREP_FILE_BYTES = 1 * 1024 * 1024  # grep 单文件最大读取字节数：1 MB
+DEFAULT_GLOB_MAX_RESULTS = 500        # glob 默认最大结果数
+MAX_GLOB_MAX_RESULTS = 2000           # glob 最大可配置结果数
+
+# grep / glob 遍历时统一剪枝的目录，避免扫描依赖与缓存
+IGNORED_DIRS = frozenset(
+    {
+        ".git",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+
 
 # 将工具入参路径解析为工作区内的绝对路径。
 # 绝对路径一律拒绝（工具契约要求相对路径），相对路径经 resolve 后必须仍落在工作区内，

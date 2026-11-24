@@ -110,6 +110,16 @@ def test_param_summary_prefers_key_fields() -> None:
     assert _param_summary("note_save", {"content": "Python 3.12"}) == "content='Python 3.12'"
 
 
+# 功能：验证 grep/glob/git 的摘要展示关键字段
+# 设计：grep/glob 展示 pattern+path，git 展示 subcommand，避免整段 JSON 撑破摘要行
+def test_param_summary_new_tools() -> None:
+    assert _param_summary("grep", {"pattern": "TODO", "path": "src"}) == (
+        "pattern='TODO', path='src'"
+    )
+    assert _param_summary("glob", {"pattern": "*.py"}) == "pattern='*.py'"
+    assert _param_summary("git", {"subcommand": "status", "args": []}) == "subcommand='status'"
+
+
 # 功能：验证 LLMStreamBlock 结束时渲染为 Content（Markdown 排版但可选中复制）
 # 设计：RichVisual 不支持 Textual 的文本提取，必须以 Content 承载渲染结果
 def test_llm_block_finalize_renders_markdown() -> None:

@@ -11,6 +11,10 @@ RiskLevel = Literal["low", "medium", "high"]
 
 _RISK_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
+# git 安全子集：只读子命令自动放行，变更子命令需审批，restore 永不缓存放行
+GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset({"status", "diff", "log", "show"})
+GIT_MUTATING_SUBCOMMANDS: frozenset[str] = frozenset({"add", "commit", "branch", "restore"})
+
 # bash 工具中识别风险等级和缓存粒度（pattern）的分析结果
 @dataclass(frozen=True)
 class Analysis:
@@ -495,11 +499,44 @@ def analyze_command(command: str, workspace: Path | None = None) -> Analysis:
         walker.walk(node)
     return walker.result()
 
+# 分析 git 工具：只读子命令低风险，变更子命令中风险，restore 高风险且强制审批
+def _analyze_git(params: dict[str, Any]) -> Analysis:
+    sub = str(params.get("subcommand", "")).strip()
+    if not sub:
+        return Analysis(pattern="git", force_ask=True)
+    pattern = f"git {sub}"
+    if sub in GIT_READ_ONLY_SUBCOMMANDS:
+        return Analysis(pattern=pattern)
+    if sub == "restore":
+        return Analysis(risk="high", pattern=pattern, force_ask=True)
+    return Analysis(risk="medium", pattern=pattern)
+
+# 分析 grep 工具：目标路径命中敏感目录/文件名时高风险并强制审批
+def _analyze_grep(params: dict[str, Any], root: Path) -> Analysis:
+    raw_path = params.get("path")
+    target = raw_path if isinstance(raw_path, str) and raw_path else "."
+    resolved = _resolve_path(target, root)
+    pattern = str(resolved)
+    outside = not resolved.is_relative_to(root)
+    if outside or _is_sensitive(resolved):
+        return Analysis(
+            risk="high",
+            pattern=pattern,
+            affected_paths=(pattern,),
+            outside=outside,
+            force_ask=True,
+        )
+    return Analysis(risk="low", pattern=pattern, affected_paths=(pattern,))
+
 # 分析任意工具调用；文件工具以目标绝对路径作为 pattern 与影响路径
 def analyze_tool(tool_name: str, params: dict[str, Any], workspace: Path | None = None) -> Analysis:
     root = (workspace or Path.cwd()).resolve()
     if tool_name == "bash":
         return analyze_command(str(params.get("command", "")), root)
+    if tool_name == "git":
+        return _analyze_git(params)
+    if tool_name == "grep":
+        return _analyze_grep(params, root)
 
     raw_path = params.get("path")
     if not isinstance(raw_path, str) or not raw_path:
@@ -526,6 +563,8 @@ def analyze_tool(tool_name: str, params: dict[str, Any], workspace: Path | None 
 
 __all__ = [
     "Analysis",
+    "GIT_MUTATING_SUBCOMMANDS",
+    "GIT_READ_ONLY_SUBCOMMANDS",
     "RiskLevel",
     "analyze_command",
     "analyze_tool",

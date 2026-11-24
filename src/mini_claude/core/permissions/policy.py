@@ -5,7 +5,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from mini_claude.core.permissions.analysis import analyze_command
+from mini_claude.core.permissions.analysis import (
+    GIT_READ_ONLY_SUBCOMMANDS,
+    analyze_command,
+)
 
 
 class PermissionDecision(StrEnum):
@@ -31,6 +34,10 @@ DEFAULT_POLICIES: dict[str, ToolPolicy] = {
     "read_file":  ToolPolicy(default=PermissionDecision.ALLOW),
     "list_dir":   ToolPolicy(default=PermissionDecision.ALLOW),
     "note_save":  ToolPolicy(default=PermissionDecision.ALLOW),
+    "grep":       ToolPolicy(default=PermissionDecision.ALLOW),
+    "glob":       ToolPolicy(default=PermissionDecision.ALLOW),
+    # git 默认 ASK，只读子命令在 default_decision() 中提升为 ALLOW
+    "git":        ToolPolicy(default=PermissionDecision.ASK),
 }
 
 # 未在 DEFAULT_POLICIES 中登记的工具的兜底策略
@@ -44,6 +51,9 @@ _PREVIEW_KEY: dict[str, str] = {
     "edit_file":  "path",
     "list_dir":   "path",
     "note_save":  "content",
+    "grep":       "pattern",
+    "glob":       "pattern",
+    "git":        "subcommand",
 }
 _PREVIEW_MAX = 60
 
@@ -59,6 +69,20 @@ def param_preview(tool_name: str, params: dict[str, Any]) -> str:
     snippet = str(params)
     return snippet[:_PREVIEW_MAX] if len(snippet) > _PREVIEW_MAX else snippet
 
+# 计算工具默认决策：git 只读子命令提升为 ALLOW，其余沿用策略默认值
+def default_decision(
+    tool_name: str,
+    params: dict[str, Any],
+    policy: ToolPolicy | None,
+) -> PermissionDecision:
+    if policy is None:
+        return _UNKNOWN_TOOL_DEFAULT
+    if tool_name == "git":
+        sub = str(params.get("subcommand", ""))
+        if sub in GIT_READ_ONLY_SUBCOMMANDS:
+            return PermissionDecision.ALLOW
+    return policy.default
+
 # 对工具 + 参数执行 4 层静态策略评估，返回 ALLOW/DENY/ASK
 def evaluate(
     tool_name: str,
@@ -71,7 +95,7 @@ def evaluate(
     if policy is None:
         return _UNKNOWN_TOOL_DEFAULT
 
-    # 针对bash工具严格校验
+    # 针对 bash 工具严格校验
     command = str(params.get("command", "")) if tool_name == "bash" else ""
     if command:
         for pat in policy.deny_patterns:
@@ -86,4 +110,4 @@ def evaluate(
             if re.search(pat, command):
                 return PermissionDecision.ALLOW
 
-    return policy.default
+    return default_decision(tool_name, params, policy)
