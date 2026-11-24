@@ -1,0 +1,60 @@
+# MiniClaude 配置文件模板
+#
+# 用法：
+#   全局：mkdir -p ~/.mc && cp config.toml.example ~/.mc/config.toml
+#   项目级：mkdir -p .mc && cp config.toml.example .mc/config.toml
+#
+# 加载顺序（后者覆盖前者）：内置默认值 → ~/.mc/config.toml → ./.mc/config.toml
+# 环境变量 MINICLAUDE_* 优先级最高，可覆盖此处对应字段（见 .env.example）。
+# 注意：出现未知顶层小节或未知键会直接报错退出。
+
+[core]
+host = "127.0.0.1"
+port = 10721
+
+[logging]
+level = "INFO"                # DEBUG | INFO | WARNING | ERROR
+file = "~/.mc/logs/core.log"  # 留空字符串 "" 则仅输出 stderr
+format = "text"               # text | json
+
+[agent]
+max_steps = 20                # 单次 run 的最大 agent 步数（正整数）
+
+[llm]
+default_model = "claude-sonnet-4-6"
+router = "static"             # static | rule_based | cost_budget
+
+[trace]
+enabled = false
+file = "~/.mc/logs/trace.jsonl"
+include_llm_payload = false   # 是否记录完整 LLM 请求/响应（体积大且可能含敏感内容）
+
+[permission]
+timeout_s = 60.0              # 权限审批超时秒数；0 表示不超时
+
+[compaction]
+auto_threshold = 0.0          # context 使用率阈值（0~1）；0 表示禁用自动压缩
+tool_result_limit = 8000      # 单个 tool_result 超过该字符数时截断
+tool_result_keep = 4000       # 截断后保留的前缀字符数
+
+[sandbox]
+mode = "workspace"            # off | workspace | strict
+allow_write = []              # workspace 外额外可写路径
+allow_read = []               # 家目录外额外可读路径
+
+# ── MCP 服务器（可选） ────────────────────────────────────────
+# servers 为数组表（[[mcp.servers]]），可配置多个；取消注释以启用。
+# stdio 传输需要 command；tcp 传输需要 host / port。
+#
+# [[mcp.servers]]
+# name = "filesystem"
+# transport = "stdio"
+# command = "npx"
+# args = ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/dir"]
+# env = { SOME_TOKEN = "xxx" }
+#
+# [[mcp.servers]]
+# name = "remote"
+# transport = "tcp"
+# host = "localhost"
+# port = 3000
