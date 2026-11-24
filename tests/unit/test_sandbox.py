@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import shlex
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +48,50 @@ def test_darwin_workspace_profile(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert '(deny file-write* (subpath "/"))' in profile
     assert f'(allow file-write* (subpath "{workspace}")' in profile
     assert "(deny network*)" not in profile
+    # 临时目录默认可写，否则 uv 等工具创建锁文件会 EPERM
+    for tmp in sandbox_mod._temp_write_roots():
+        assert f'(allow file-write* (subpath "{tmp}"))' in profile
+
+
+# 功能：profile 为放行路径补充祖先目录的元数据读权限
+# 设计：工作区嵌套在多层目录下，断言每一级父目录都有 literal metadata 规则；
+# 缺少时 realpath(3)/canonicalize 会因祖先被 deny 而 EPERM
+def test_darwin_profile_allows_ancestor_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox_mod.shutil, "which", _fake_which)
+    workspace = (tmp_path / "a" / "b" / "ws").resolve()
+    workspace.mkdir(parents=True)
+
+    argv = build_argv("echo hi", workspace, SandboxConfig(mode="workspace"))
+
+    profile = argv[2]
+    for parent in workspace.parents:
+        assert f'(allow file-read-metadata (literal "{parent}"))' in profile
+
+
+# 功能：allow_write 位于被禁读目录下时也需要祖先元数据放行
+def test_darwin_profile_allows_ancestors_of_extra_write_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sandbox_mod.sys, "platform", "darwin")
+    monkeypatch.setattr(sandbox_mod.shutil, "which", _fake_which)
+    workspace = tmp_path.resolve()
+    cache = (tmp_path / "home" / "cache").resolve()
+
+    argv = build_argv(
+        "echo hi",
+        workspace,
+        SandboxConfig(mode="workspace", allow_write=[str(cache)]),
+    )
+
+    profile = argv[2]
+    assert f'(allow file-write* (subpath "{cache}")' in profile
+    # 路径自身的元数据也要可读，否则存在性检查会误判
+    assert f'(allow file-read-metadata (literal "{cache}"))' in profile
+    for parent in cache.parents:
+        assert f'(allow file-read-metadata (literal "{parent}"))' in profile
 
 
 # 功能：strict 模式在 workspace 基础上追加网络禁用
@@ -88,6 +134,7 @@ def test_darwin_extra_paths_are_resolved(
 def test_linux_workspace_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(sandbox_mod.sys, "platform", "linux")
     monkeypatch.setattr(sandbox_mod.shutil, "which", _fake_which)
+    monkeypatch.setattr(sandbox_mod, "_temp_write_roots", lambda: [Path("/tmp")])
     workspace = tmp_path.resolve()
 
     argv = build_argv("echo hi", workspace, SandboxConfig(mode="workspace"))
@@ -97,6 +144,8 @@ def test_linux_workspace_argv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert argv[argv.index("--ro-bind") + 1 : argv.index("--ro-bind") + 3] == ["/", "/"]
     bind_at = argv.index("--bind")
     assert argv[bind_at + 1 : bind_at + 3] == [str(workspace), str(workspace)]
+    # 系统临时目录额外 bind 为可写
+    assert "--bind /tmp /tmp".split() == argv[bind_at + 3 : bind_at + 6]
     assert argv[argv.index("--chdir") + 1] == str(workspace)
     assert "--unshare-net" not in argv
     assert argv[-4:] == ["--", "/bin/sh", "-c", "echo hi"]
@@ -165,7 +214,8 @@ darwin_only = pytest.mark.skipif(
 
 
 # 功能：workspace 模式下工作区内命令可用、工作区外写入被 OS 拒绝
-# 设计：真实执行 sandbox-exec；工作区建在 tmp_path/ws，外部目标在 tmp_path，验证写隔离边界
+# 设计：真实执行 sandbox-exec；工作区建在 tmp_path/ws。外部目标不能放在
+# tmp_path（系统临时目录已默认放行），改用同样可写但不在放行范围内的 /Users/Shared。
 @darwin_only
 async def test_darwin_sandbox_confines_writes(tmp_path: Path) -> None:
     workspace = tmp_path / "ws"
@@ -181,7 +231,89 @@ async def test_darwin_sandbox_confines_writes(tmp_path: Path) -> None:
     assert not written.is_error
     assert inside.read_text().strip() == "in"
 
-    outside = tmp_path / "out.txt"
-    blocked = await tool.invoke({"command": f"echo out > {shlex.quote(str(outside))}"})
-    assert blocked.is_error
-    assert not outside.exists()
+    shared = Path("/Users/Shared")
+    if not shared.is_dir():
+        pytest.skip("/Users/Shared unavailable")
+    outside = shared / f"mc_sandbox_out_{os.getpid()}"
+    try:
+        blocked = await tool.invoke(
+            {"command": f"echo out > {shlex.quote(str(outside))}"}
+        )
+        assert blocked.is_error
+        assert not outside.exists()
+    finally:
+        outside.unlink(missing_ok=True)
+
+
+# 功能：工作区位于家目录下时，祖先目录可通过元数据访问（realpath 可用）
+# 设计：把假家目录设到 tmp_path，工作区嵌套其内；stat 祖先目录在修复前会 EPERM
+@darwin_only
+def test_darwin_allows_ancestor_metadata_under_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_home = (tmp_path / "home").resolve()
+    workspace = fake_home / "proj" / "ws"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+    argv = build_argv("true", workspace, SandboxConfig(mode="workspace"))
+    result = subprocess.run(
+        ["sandbox-exec", "-p", argv[2], "/usr/bin/stat", "-f", "%N", str(fake_home / "proj")],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+# 功能：allow_write 位于家目录下时可实际写入（uv 缓存等场景）
+# 设计：假家目录下建 cache 目录，配置 allow_write 后真实执行写入
+@darwin_only
+def test_darwin_allows_extra_write_path_under_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake_home = (tmp_path / "home").resolve()
+    workspace = fake_home / "proj" / "ws"
+    workspace.mkdir(parents=True)
+    cache = fake_home / "cache"
+    cache.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    target = cache / "x.txt"
+
+    argv = build_argv(
+        f"test -d {shlex.quote(str(cache))} && echo ok > {shlex.quote(str(target))}",
+        workspace,
+        SandboxConfig(mode="workspace", allow_write=[str(cache)]),
+    )
+    result = subprocess.run(
+        ["sandbox-exec", "-p", argv[2], *argv[3:]],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert target.read_text().strip() == "ok"
+
+
+# 功能：系统临时目录默认允许写入（uv 等工具的锁文件/中间文件）
+@darwin_only
+def test_darwin_allows_temp_writes(tmp_path: Path) -> None:
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    target = sandbox_mod._temp_write_roots()[0] / f"mc_sbx_{os.getpid()}"
+    command = f"echo ok > {shlex.quote(str(target))} && cat {shlex.quote(str(target))}"
+
+    argv = build_argv(command, workspace, SandboxConfig(mode="workspace"))
+    try:
+        result = subprocess.run(
+            ["sandbox-exec", "-p", argv[2], *argv[3:]],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "ok" in result.stdout
+    finally:
+        target.unlink(missing_ok=True)

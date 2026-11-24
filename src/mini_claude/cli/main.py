@@ -10,13 +10,13 @@ from mini_claude.cli.commands.core import (
     cmd_core_status,
     cmd_core_stop,
 )
-from mini_claude.cli.commands.trace import cmd_trace
-from mini_claude.cli.commands.version import cmd_version
 from mini_claude.cli.commands.ping import cmd_ping
 from mini_claude.cli.commands.run import cmd_run
-
+from mini_claude.cli.commands.trace import cmd_trace
+from mini_claude.cli.commands.version import cmd_version
 from mini_claude.core.conf.config import get_config
 from mini_claude.core.log.logging_setup import setup_logging
+
 
 # CLI 主入口：统一把 Ctrl+C 转成退出码 130，避免打印 KeyboardInterrupt 堆栈
 def main() -> None:
@@ -58,7 +58,7 @@ def _main() -> None:
 
     args = parser.parse_args()
     if args.version:
-        print("MiniClaude CLI ",cmd_version())
+        cmd_version()
         return
 
     config = get_config()

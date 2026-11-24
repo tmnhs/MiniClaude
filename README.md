@@ -27,6 +27,6 @@ cp .env.example .env        # 按需修改
 
 uv run mc-core &          # 启动守护进程（后台）
 uv run mc ping            # 验证连通：应返回 pong
-uv run mc --version       # 应输出 0.0.1
+uv run mc --version       # 输出当前版本号，如 MiniClaude CLI 0.1.4
 ```
 
