@@ -34,6 +34,7 @@ from mini_claude.core.bus.commands import (
     SessionSendMessageResult,
 )
 from mini_claude.core.bus.envelope import EventPushEnvelope
+from mini_claude.core.bus.events import RunFinishedEvent
 from mini_claude.core.conf.config import MiniClaudeConfig, get_config
 from mini_claude.core.events.bus import EventBus
 from mini_claude.core.llm.provider import AnthropicProvider
@@ -96,8 +97,44 @@ class CoreApp():
         )
 
         self._running_runs.add(run_task)
-        run_task.add_done_callback(self._running_runs.discard)
+        run_task.add_done_callback(lambda t: self._on_run_done(t, run_id, session.id))
         return AgentRunResult(run_id=run_id)
+
+    # 清理已完成的 run 任务；若异常逃逸，记录日志并补发终态事件，避免 run 静默失败
+    def _on_run_done(
+        self, task: asyncio.Task[Any], run_id: str, session_id: str
+    ) -> None:
+        self._running_runs.discard(task)
+
+        # 取消由 runner 内部自行标记终态，这里无需处理
+        if task.cancelled():
+            return
+
+        exc = task.exception()
+        if exc is None:
+            return
+
+        logger.error("run task failed run_id=%s", run_id, exc_info=exc)
+        # 正常路径下 send_message 已发布终态；此处仅异常逃逸时补发，
+        # 极端情况下可能与 runner 的终态重复，属可接受的错误路径冗余
+        asyncio.create_task(
+            self._publish_run_failed(run_id, session_id, type(exc).__name__)
+        )
+
+    # 为异常终止的 run 补发 failed 终态事件
+    async def _publish_run_failed(
+        self, run_id: str, session_id: str, err_name: str
+    ) -> None:
+        await self._bus.publish(
+            RunFinishedEvent(
+                run_id=run_id,
+                status="failed",
+                reason=f"run_task_error:{err_name}",
+                steps=0,
+                session_id=session_id,
+                ts=now_iso(),
+            )
+        )
 
     # 创建 chat 或 one_shot session，并返回 session_id
     async def _session_create_handler(self, params: dict[str, Any]) -> SessionCreateResult:

@@ -121,6 +121,19 @@ async def test_max_steps_marks_failed() -> None:
     assert ctx.step == 2
 
 
+# 功能：未知 stop_reason 立即以可读错误码终止，而非继续循环到 max_steps
+# 设计：provider 返回 stop_sequence，断言首步即 failed 且 reason 携带原始 stop_reason，
+#       防止真实终止原因被 exceeded_max_steps 掩盖
+async def test_unsupported_stop_reason_marks_failed() -> None:
+    provider = _MockProvider([LlmResponse(stop_reason="stop_sequence", text="x")])
+    loop, _ = _make_loop(provider)
+    ctx = _ctx()
+    await loop.run(ctx)
+    assert ctx.status == "failed"
+    assert ctx.reason == "unsupported_stop_reason:stop_sequence"
+    assert ctx.step == 1
+
+
 # 功能：验证"调工具 → end_turn"的两步路径最终标记为 success
 # 设计：provider 返回 [tool_use, end_turn] 序列，注册真实 EchoTool，覆盖最常见的正常工作路径
 async def test_tool_use_then_end_turn_marks_success() -> None:

@@ -126,7 +126,9 @@ class SocketServer:
         while True:
             try:
                 line = await reader.readline()
-            except asyncio.LimitOverrunError:
+            except ValueError:
+                # StreamReader.readline() 会把内部的 LimitOverrunError 转成 ValueError，
+                # 仅捕获 LimitOverrunError 会漏掉超长帧，导致连接被静默断开
                 await self._send(writer, make_error(None, INVALID_REQUEST, "Request too large"))
                 return
 

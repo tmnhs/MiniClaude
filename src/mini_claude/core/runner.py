@@ -340,7 +340,7 @@ class AgentLoop:
                 )
             )
 
-            # [plan] call LLM — API errors terminate the run
+            # [plan] 调用 LLM —— API 错误会终止本次 run
             try:
                 response = await self._provider.chat(
                     messages=ctx.messages,
@@ -360,8 +360,8 @@ class AgentLoop:
                 logger.error("LLM call error: %s, run_id: %s, step: %d", e, ctx.run_id, ctx.step)
                 break
 
-            # [observe] append assistant content blocks to ctx
-            # thinking blocks must come first and be preserved verbatim for extended thinking mode
+            # [observe] 将 assistant 内容块追加到 ctx
+            # thinking 块必须排在最前，并原样保留，以支持 extended thinking 模式
             blocks: list[dict[str, object]] = list(response.thinking_blocks)
             if response.text:
                 blocks.append({"type": "text", "text": response.text})
@@ -371,7 +371,7 @@ class AgentLoop:
                 )
             ctx.add_assistant_message(blocks)
 
-            # [act] execute each requested tool; errors become tool results so loop continues
+            # [act] 执行每个请求的工具；工具错误转为 tool result，使循环得以继续
             if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
                     result = await invoke_tool(
@@ -381,8 +381,8 @@ class AgentLoop:
                     )
                     ctx.add_tool_result(tc.id, result.content, is_error=result.is_error)
             elif response.stop_reason == "max_tokens" and response.tool_calls:
-                # Output token limit hit mid-tool-call; input is incomplete.
-                # Add synthetic error results so the conversation stays balanced.
+                # 输出 token 上限在工具调用中途被触发；此时输入不完整。
+                # 追加合成的错误结果，以保持对话的 user/assistant 平衡。
                 for tc in response.tool_calls:
                     ctx.add_tool_result(
                         tc.id,
@@ -392,10 +392,13 @@ class AgentLoop:
                         is_error=True,
                     )
 
-            # Termination check — end_turn wins over max_steps if both hit on same step
+            # 终止判断
             if response.stop_reason == "end_turn":
                 ctx.result = response.text or ""
                 ctx.mark_success()
+            elif response.stop_reason not in ("tool_use", "max_tokens"):
+                # 未知 stop_reason 若继续循环，会一直跑到 max_steps，真实原因被掩盖
+                ctx.mark_failed(f"unsupported_stop_reason:{response.stop_reason}")
             elif ctx.step >= ctx.max_steps:
                 logger.error(
                     "LLM call exceeded max steps: %s, run_id: %s",

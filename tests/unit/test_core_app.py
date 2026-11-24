@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -160,3 +161,40 @@ async def test_session_resume_handler_loads_from_disk(tmp_path: Any) -> None:
     assert result.session_id == session.id
     assert result.status == "waiting_for_input"
     assert result.run_count == 0
+
+
+# 功能：run 任务异常逃逸时补发 failed 终态事件，而非静默丢弃
+# 设计：fake sessions 的 send_message 立即抛 RuntimeError；订阅 _bus 捕获 run.finished，
+#       用 Event 等待而非 sleep 轮询，断言 status=failed 且 reason 带错误类名
+async def test_run_task_exception_publishes_failed_event() -> None:
+    class _Session:
+        id = "sess-1"
+
+    class _FakeSessions:
+        async def create(self, **kwargs: Any) -> _Session:
+            return _Session()
+
+        async def send_message(
+            self, session_id: str, content: str, run_id: str
+        ) -> None:
+            raise RuntimeError("boom")
+
+    finished: list[Any] = []
+    found = asyncio.Event()
+
+    async def _handler(event: Any) -> None:
+        if getattr(event, "type", "") == "run.finished":
+            finished.append(event)
+            found.set()
+
+    app = CoreApp()
+    app._config = object()  # type: ignore[assignment]
+    app._sessions = _FakeSessions()  # type: ignore[assignment]
+    app._bus.subscribe(_handler)
+
+    await app._agent_run_handler({"goal": "x"})
+    await asyncio.wait_for(found.wait(), timeout=2.0)
+
+    assert finished[0].status == "failed"
+    assert finished[0].reason.startswith("run_task_error:")
+    assert finished[0].run_id

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 
+import pytest
+
+from mini_claude.core.transport import socket_server as socket_server_mod
 from mini_claude.core.transport.socket_server import SocketServer
 
 
@@ -44,3 +48,33 @@ async def test_no_broadcaster_server_starts_and_stops() -> None:
     server = SocketServer("127.0.0.1", port)
     await server.start()
     await server.stop()
+
+
+# 功能：超过帧上限的行应收到 INVALID_REQUEST 错误帧，随后连接被关闭
+# 设计：把模块级 _MAX_LINE_BYTES 调小后再启动服务器（start_server(limit=...) 在 start 时求值），
+#       发送无换行的超长数据触发 readline 的 ValueError 路径，验证错误帧 + EOF 而非静默断开
+async def test_oversize_frame_returns_error_then_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(socket_server_mod, "_MAX_LINE_BYTES", 1024)
+    port = _free_port()
+    server = SocketServer("127.0.0.1", port)
+    await server.start()
+
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"x" * 4096)
+        await writer.drain()
+
+        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+        msg = json.loads(line)
+        assert msg["error"]["code"] == -32600
+        assert "Request too large" in msg["error"]["message"]
+
+        rest = await asyncio.wait_for(reader.read(), timeout=2.0)
+        assert rest == b""
+
+        writer.close()
+        await writer.wait_closed()
+    finally:
+        await server.stop()
